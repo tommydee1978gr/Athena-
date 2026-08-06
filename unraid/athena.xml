@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>ATHENA</Name>
+  <Repository>ghcr.io/tommydee1978gr/athena:latest</Repository>
+  <Registry>https://github.com/users/tommydee1978gr/packages/container/package/athena</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/tommydee1978gr/Athena-/issues</Support>
+  <Project>https://github.com/tommydee1978gr/Athena-</Project>
+  <Overview>ATHENA unified private family assistant with the embedded router-for-me/CLIProxyAPI LLM brain. One GHCR package and one Unraid container. The CLIProxyAPI management panel connects Claude, Codex/OpenAI, Gemini and Grok accounts; ATHENA discovers their available models dynamically and selects the appropriate LLM internally; users do not choose a model.</Overview>
+  <Category>Tools: Other: Status:Beta</Category>
+  <WebUI>http://[IP]:[PORT:8000]/</WebUI>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled>0</DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>For a private GHCR package, configure GHCR credentials in Unraid before pulling. Open ATHENA first, create the administrator, then use ATHENA → LLM Router to obtain the generated management key and open the CLIProxyAPI panel.</Requires>
+  <Config Name="ATHENA Web Port" Target="8000" Default="8000" Mode="tcp" Description="ATHENA web interface" Type="Port" Display="always" Required="true" Mask="false">8000</Config>
+  <Config Name="CLIProxyAPI Management" Target="8317" Default="8317" Mode="tcp" Description="Embedded router-for-me/CLIProxyAPI management and OpenAI-compatible API" Type="Port" Display="always" Required="true" Mask="false">8317</Config>
+  <Config Name="OAuth Callback 8085" Target="8085" Default="8085" Mode="tcp" Description="CLIProxyAPI provider OAuth callback" Type="Port" Display="advanced" Required="true" Mask="false">8085</Config>
+  <Config Name="OAuth Callback 1455" Target="1455" Default="1455" Mode="tcp" Description="CLIProxyAPI provider OAuth callback" Type="Port" Display="advanced" Required="true" Mask="false">1455</Config>
+  <Config Name="OAuth Callback 54545" Target="54545" Default="54545" Mode="tcp" Description="CLIProxyAPI provider OAuth callback" Type="Port" Display="advanced" Required="true" Mask="false">54545</Config>
+  <Config Name="OAuth Callback 51121" Target="51121" Default="51121" Mode="tcp" Description="CLIProxyAPI provider OAuth callback" Type="Port" Display="advanced" Required="true" Mask="false">51121</Config>
+  <Config Name="OAuth Callback 11451" Target="11451" Default="11451" Mode="tcp" Description="CLIProxyAPI provider OAuth callback" Type="Port" Display="advanced" Required="true" Mask="false">11451</Config>
+  <Config Name="Persistent Configuration" Target="/config" Default="/mnt/user/appdata/athena" Mode="rw" Description="Database, encrypted vault, CLIProxyAPI config/auths/logs, models, releases and master key" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/athena</Config>
+  <Config Name="Personal Media Library" Target="/media" Default="/mnt/user/athena-media" Mode="rw" Description="Per-user media uploaded through ATHENA" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/athena-media</Config>
+  <Config Name="Timezone" Target="TZ" Default="Europe/Athens" Mode="" Description="Container timezone" Type="Variable" Display="always" Required="true" Mask="false">Europe/Athens</Config>
+  <Config Name="Public Base URL" Target="ATHENA_PUBLIC_BASE_URL" Default="" Mode="" Description="Optional external HTTPS URL used for ATHENA OAuth callbacks. It can also be entered later from the ATHENA web page." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Secure Session Cookie" Target="ATHENA_COOKIE_SECURE" Default="0" Mode="" Description="Set to 1 only when ATHENA is served through HTTPS." Type="Variable" Display="advanced" Required="true" Mask="false">0</Config>
+  <Config Name="Trusted Reverse Proxy IPs" Target="ATHENA_FORWARDED_ALLOW_IPS" Default="127.0.0.1" Mode="" Description="Comma-separated reverse proxy IPs allowed to provide forwarded headers." Type="Variable" Display="advanced" Required="true" Mask="false">127.0.0.1</Config>
+</Container>

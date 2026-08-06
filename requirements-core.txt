@@ -1,0 +1,14 @@
+# Core web app — install this first for local dev (`pip install -r requirements-core.txt`).
+# Boots the FastAPI backend, auth, permissions, encrypted vault, all integrations,
+# and the CLIProxyAPI brain client. No voice yet — see requirements-voice.txt.
+fastapi==0.128.2
+uvicorn[standard]==0.48.0
+httpx==0.28.1
+python-multipart==0.0.29
+cryptography==46.0.4
+argon2-cffi==25.1.0
+pydantic==2.13.4
+Pillow==12.2.0
+numpy==2.3.5
+apscheduler==3.11.0
+mcp==2.0.0

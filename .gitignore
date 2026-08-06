@@ -1,0 +1,22 @@
+# Local dev environment
+.venv/
+__pycache__/
+*.pyc
+
+# Runtime state — never commit real data, keys, or family info
+config/
+media/
+data/demo/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs and scratch
+*.log
+.env
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

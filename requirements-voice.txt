@@ -1,0 +1,8 @@
+# Local voice + embeddings — heavy ML deps (torch, etc.), install once you reach
+# the voice phase: `pip install -r requirements-voice.txt`.
+# faster-whisper / speechbrain still exist as an offline fallback, but the
+# primary voice path is ElevenLabs (see app/voice.py) per the JARVIS direction.
+faster-whisper==1.2.1
+piper-tts==1.4.2
+speechbrain==1.1.0
+sentence-transformers==5.6.0
