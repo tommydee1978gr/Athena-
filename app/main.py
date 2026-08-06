@@ -324,17 +324,21 @@ async def setup_submit(display_name: str = Form(...), username: str = Form(...),
     return response
 
 
+def _login_page_body(error: str = "", username: str = "") -> str:
+    error_html = f"<p class='error'>{esc(error)}</p>" if error else ""
+    return f"""<img class='auth-mark' src='/static/avatar.jpg' alt='ATHENA'>
+    <h1 style='text-align:center'>Σύνδεση</h1>
+    <div class='card'>{error_html}<form method='post' action='/login'>
+    <label>Όνομα χρήστη<input name='username' value='{esc(username)}' required autocomplete='username'></label>
+    <label>Κωδικός<input name='password' type='password' required autocomplete='current-password'></label>
+    <button style='width:100%'>Σύνδεση</button></form></div>"""
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
     if setup_required():
         return RedirectResponse("/setup", 303)
-    body = """<img class='auth-mark' src='/static/avatar.jpg' alt='ATHENA'>
-    <h1 style='text-align:center'>Σύνδεση</h1>
-    <div class='card'><form method='post' action='/login'>
-    <label>Όνομα χρήστη<input name='username' required autocomplete='username'></label>
-    <label>Κωδικός<input name='password' type='password' required autocomplete='current-password'></label>
-    <button style='width:100%'>Σύνδεση</button></form></div>"""
-    return layout("Σύνδεση", body, centered=True)
+    return layout("Σύνδεση", _login_page_body(), centered=True)
 
 
 @app.post("/login")
@@ -346,13 +350,19 @@ async def login(request: Request, username: str = Form(...), password: str = For
         conn.execute("DELETE FROM login_failures WHERE created_at<?", (cutoff,))
         failures = conn.execute("SELECT COUNT(*) AS c FROM login_failures WHERE username=? COLLATE NOCASE AND remote_addr=? AND created_at>=?", (normalized, remote, cutoff)).fetchone()["c"]
         if failures >= 8:
-            raise HTTPException(429, "Too many failed login attempts. Try again later.")
+            body = _login_page_body("Πολλές αποτυχημένες προσπάθειες. Δοκίμασε ξανά σε λίγα λεπτά.", normalized)
+            response = layout("Σύνδεση", body, centered=True)
+            response.status_code = 429
+            return response
         row = conn.execute("SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1", (normalized,)).fetchone()
     if not row or not password_verify(row["password_hash"], password):
         with connect() as conn:
             conn.execute("INSERT INTO login_failures(id,username,remote_addr,created_at) VALUES(?,?,?,?)", (str(uuid.uuid4()), normalized, remote, utcnow()))
         audit(row["id"] if row else None, "login_failed", {"username": normalized}, remote)
-        raise HTTPException(401, "Invalid credentials")
+        body = _login_page_body("Λάθος όνομα χρήστη ή κωδικός.", normalized)
+        response = layout("Σύνδεση", body, centered=True)
+        response.status_code = 401
+        return response
     with connect() as conn:
         conn.execute("DELETE FROM login_failures WHERE username=? COLLATE NOCASE AND remote_addr=?", (normalized, remote))
     token, _ = create_session(row["id"])
