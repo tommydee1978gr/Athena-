@@ -46,10 +46,10 @@ RUN python -m compileall -q /opt/athena/app \
     && /usr/local/bin/CLIProxyAPI --help >/dev/null \
     && ffprobe -version >/dev/null \
     && chmod 0755 /opt/athena/entrypoint.sh /usr/local/bin/CLIProxyAPI \
-    && mkdir -p /config /media /opt/cliproxy
+    && mkdir -p /config /media /projects /opt/cliproxy
 
 EXPOSE 8000 8317 8085 1455 54545 51121 11451
-VOLUME ["/config", "/media"]
+VOLUME ["/config", "/media", "/projects"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=5 \
   CMD curl --fail --silent http://127.0.0.1:8000/health >/dev/null && python -c "import socket; s=socket.create_connection(('127.0.0.1',8317),3); s.close()" || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/athena/entrypoint.sh"]

@@ -14,6 +14,10 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = Path(os.getenv("ATHENA_CONFIG_DIR", str(_PROJECT_ROOT / "config")))
 MEDIA_DIR = Path(os.getenv("ATHENA_MEDIA_DIR", str(_PROJECT_ROOT / "media")))
 UI_DIR = _PROJECT_ROOT / "ui"
+# Read-only mount of an existing share (lyrics, notes, reference files for
+# in-progress projects). Optional — if the path doesn't exist, the
+# project_files tools just report nothing is mounted rather than erroring.
+PROJECTS_SOURCE_DIR = Path(os.getenv("ATHENA_PROJECTS_DIR", "/projects"))
 DB_PATH = CONFIG_DIR / "athena.db"
 MASTER_KEY_PATH = CONFIG_DIR / "master.key"
 MODEL_DIR = CONFIG_DIR / "models"

@@ -23,6 +23,7 @@ from .integrations import (
 from .creative import add_prompt, create_project, list_projects, prompts_that_worked, update_project_status
 from .mcp_client import call_cached_tool, cached_tools_as_functions
 from .memory import add_memory, search_memory
+from .project_files import list_files as list_project_files, mounted as project_files_mounted, read_text_file as read_project_file
 from .permissions import is_allowed
 from .routines import create_routine as create_routine_row, list_routines
 from .scheduler import schedule_routine
@@ -153,6 +154,20 @@ def available_tools(user) -> list[dict[str, Any]]:
             "List this user's song/videoclip projects.",
             {"status": {"type": "string", "enum": ["idea", "writing", "generating", "mixing", "done", "published", "abandoned", "all"]}},
         ))
+        if project_files_mounted():
+            tools += [
+                _tool(
+                    "project_files_search",
+                    "List/search real files in the mounted projects share (lyrics, notes, reference files already on disk) — read-only.",
+                    {"subpath": {"type": "string"}, "search": {"type": "string"}},
+                ),
+                _tool(
+                    "project_files_read",
+                    "Read the text content of one file from the mounted projects share by its path (from project_files_search).",
+                    {"path": {"type": "string"}},
+                    ["path"],
+                ),
+            ]
     if is_allowed(user, "routines.manage"):
         tools += [
             _tool(
@@ -284,6 +299,10 @@ async def execute_tool(user, name: str, args: dict[str, Any]) -> Any:
             return {"status": "error", "error": str(exc)}
     if name == "creative_project_list" and is_allowed(user, "creative.read"):
         return list_projects(user["id"], args.get("status", "all"))
+    if name == "project_files_search" and is_allowed(user, "creative.read"):
+        return list_project_files(args.get("subpath", ""), args.get("search", ""))
+    if name == "project_files_read" and is_allowed(user, "creative.read"):
+        return read_project_file(str(args.get("path", "")))
     if name == "routine_create" and is_allowed(user, "routines.manage"):
         try:
             routine = create_routine_row(
