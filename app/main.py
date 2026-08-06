@@ -1617,7 +1617,7 @@ async def voice_page(request: Request, user=Depends(current_user)):
     body = """<h1>Φωνή</h1>
     <div class='grid'>
       <div class='card'><h2>Speech-to-text</h2><input id='sttFile' type='file' accept='audio/*'><button onclick='stt()'>Μεταγραφή</button><pre id='sttOut'></pre></div>
-      <div class='card'><h2>Text-to-speech</h2><textarea id='ttsText'></textarea><label>Piper voice<input id='ttsVoice' value='el_GR-rapunzelina-low'></label><button onclick='tts()'>Δημιουργία WAV</button><audio id='ttsAudio' controls></audio><pre id='ttsOut'></pre></div>
+      <div class='card'><h2>Text-to-speech</h2><textarea id='ttsText'></textarea><label>Voice ID (προαιρετικό — κενό = το default από τις ρυθμίσεις)<input id='ttsVoice' value='' placeholder='π.χ. ElevenLabs voice ID'></label><button onclick='tts()'>Δημιουργία ήχου</button><audio id='ttsAudio' controls></audio><pre id='ttsOut'></pre></div>
       <div class='card'><h2>Voice ID</h2><p>Η εγγραφή βιομετρικού αποτυπώματος είναι προαιρετική και γίνεται μόνο για τον τρέχοντα λογαριασμό.</p><input id='enrollFiles' type='file' accept='audio/*' multiple><button onclick='enroll()'>Εγγραφή Voice ID</button><input id='verifyFile' type='file' accept='audio/*'><button onclick='verifyVoice()'>Έλεγχος Voice ID</button><button class='danger' onclick='removeVoice()'>Διαγραφή Voice ID</button><pre id='voiceOut'></pre></div>
       <div class='card'><h2>Μικρόφωνο / Wake phrase</h2><label>Wake phrase<input id='wakePhrase' value='Αθηνά'></label><button onclick='recordWake()'>Ηχογράφηση 5 δευτερολέπτων</button><pre id='wakeOut'></pre><small>Η πρόσβαση μικροφώνου σε browser συνήθως απαιτεί HTTPS ή localhost.</small></div>
     </div>
@@ -1670,7 +1670,11 @@ async def api_voice_stt(request: Request, audio: UploadFile = File(...), model: 
         selected_model = model or cfg.get("stt_model", "small")
         if not re.fullmatch(r"[A-Za-z0-9_.\-/]{1,120}", selected_model) or ".." in selected_model:
             raise HTTPException(400, "Invalid Whisper model name")
-        result = await transcribe(path, model_name=selected_model, device=cfg.get("stt_device", "cpu"), compute_type=cfg.get("stt_compute_type", "int8"), language=language or None)
+        try:
+            result = await transcribe(path, model_name=selected_model, device=cfg.get("stt_device", "cpu"), compute_type=cfg.get("stt_compute_type", "int8"), language=language or None)
+        except Exception as exc:
+            logger.warning("local Whisper STT also failed: %s", exc)
+            raise HTTPException(503, f"No voice backend available: {exc}") from exc
         audit(user["id"], "voice_transcribed", {"language": result.get("language"), "backend": "local"}, client_ip(request))
         return result
     finally:
@@ -1679,7 +1683,10 @@ async def api_voice_stt(request: Request, audio: UploadFile = File(...), model: 
 
 class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=10000)
-    voice: str = Field(default="el_GR-rapunzelina-low", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.-]+$")
+    # Empty means "use whatever the active backend is configured to default
+    # to" — ElevenLabs voice IDs and Piper voice names don't share a format,
+    # so there is no one sane hardcoded default across both.
+    voice: str = Field(default="", max_length=120, pattern=r"^[A-Za-z0-9_.-]*$")
     speaker_id: int | None = None
     length_scale: float = Field(default=1.0, ge=0.5, le=2.0)
 
@@ -1690,13 +1697,21 @@ async def api_voice_tts(payload: TTSRequest, request: Request, user=Depends(curr
     require_capability(user, "voice.use")
     if elevenlabs_configured():
         try:
-            audio_bytes = await elevenlabs_synthesize(payload.text, payload.voice if payload.voice != "el_GR-rapunzelina-low" else None)
+            audio_bytes = await elevenlabs_synthesize(payload.text, payload.voice or None)
             audit(user["id"], "voice_synthesized", {"backend": "elevenlabs"}, client_ip(request))
             return Response(content=audio_bytes, media_type="audio/mpeg")
         except VoiceBackendError as exc:
             logger.warning("ElevenLabs TTS failed, falling back to local: %s", exc.message)
-    path = await synthesize(payload.text, payload.voice, payload.speaker_id, payload.length_scale)
-    audit(user["id"], "voice_synthesized", {"voice": payload.voice, "backend": "local"}, client_ip(request))
+    local_voice = payload.voice or "el_GR-rapunzelina-low"
+    try:
+        path = await synthesize(payload.text, local_voice, payload.speaker_id, payload.length_scale)
+    except Exception as exc:
+        # Degrade loudly, not with a bare 500 — this is the second and last
+        # fallback (ElevenLabs already failed or isn't configured), so the
+        # caller needs a real reason, not a stack trace.
+        logger.warning("local Piper TTS also failed: %s", exc)
+        raise HTTPException(503, f"No voice backend available: {exc}") from exc
+    audit(user["id"], "voice_synthesized", {"voice": local_voice, "backend": "local"}, client_ip(request))
     return FileResponse(path, media_type="audio/wav", filename="athena.wav", background=BackgroundTask(path.unlink, missing_ok=True))
 
 
