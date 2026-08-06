@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -42,10 +43,35 @@ def elevenlabs_configured() -> bool:
     return bool(cfg and cfg.get("api_key"))
 
 
+_MD_BOLD_ITALIC = re.compile(r"\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*")
+_MD_HEADER = re.compile(r"^#{1,6}\s*", re.MULTILINE)
+_MD_BULLET = re.compile(r"^\s*[-*•]\s+", re.MULTILINE)
+_MD_CODE = re.compile(r"`([^`]*)`")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_WHITESPACE = re.compile(r"[ \t]{2,}")
+
+
+def strip_markdown_for_speech(text: str) -> str:
+    """The same answer text gets shown on screen *and* spoken — screen
+    formatting (bold, bullets, backticks, headers) has no business reaching
+    a TTS engine; read aloud it comes out as noise ("asterisk asterisk OK
+    asterisk asterisk"), not silence. This does not fix an assistant that
+    answers in a bulleted status-report style in the first place — see the
+    system prompt for that — it just keeps literal markup out of the audio."""
+    text = _MD_LINK.sub(r"\1", text)
+    text = _MD_CODE.sub(r"\1", text)
+    text = _MD_HEADER.sub("", text)
+    text = _MD_BULLET.sub("", text)
+    text = _MD_BOLD_ITALIC.sub(lambda m: next(g for g in m.groups() if g is not None), text)
+    text = _MD_WHITESPACE.sub(" ", text)
+    return text.strip()
+
+
 async def elevenlabs_synthesize(text: str, voice_id: str | None = None) -> bytes:
     cfg = _elevenlabs_config()
     if not cfg or not cfg.get("api_key"):
         raise VoiceBackendError("not_configured", "ElevenLabs is not configured — add an API key in Integrations")
+    text = strip_markdown_for_speech(text)
     url = ELEVENLABS_TTS_URL.format(voice_id=voice_id or cfg.get("default_voice_id") or ELEVENLABS_DEFAULT_VOICE_ID)
     # Without voice_settings ElevenLabs falls back to a flat, low-expressiveness
     # default that reads as robotic/grating — these are the values ElevenLabs'
@@ -175,7 +201,7 @@ def _synthesize_sync(text: str, voice: str, speaker_id: int | None, length_scale
 
 
 async def synthesize(text: str, voice: str = "el_GR-rapunzelina-low", speaker_id: int | None = None, length_scale: float = 1.0) -> Path:
-    return await asyncio.to_thread(_synthesize_sync, text, voice, speaker_id, length_scale)
+    return await asyncio.to_thread(_synthesize_sync, strip_markdown_for_speech(text), voice, speaker_id, length_scale)
 
 
 def _load_speaker_model():
