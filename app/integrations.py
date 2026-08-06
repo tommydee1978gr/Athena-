@@ -270,13 +270,17 @@ async def _json_request(method: str, url: str, *, headers: dict[str, str] | None
     return data
 
 
-async def google_authorization_url(user_id: str, service: str, mode: str, request_base: str) -> str:
+async def google_authorization_url(user_id: str, service: str, mode: str, request_base: str, slot: str = "1") -> str:
     cfg = get_app_config("google")
     if not cfg or not cfg.get("client_id") or not cfg.get("client_secret"):
         raise IntegrationError("not_configured", "Google OAuth application is not configured", http_status=409)
     if service not in GOOGLE_SCOPE_PRESETS or mode not in GOOGLE_SCOPE_PRESETS[service]:
         raise IntegrationError("invalid_request", "Unsupported Google service or permission mode", http_status=400)
-    provider = f"google_{service}"
+    # slot lets the same person hold more than one Google account connected for the
+    # same service (e.g. personal + work Gmail) without the second overwriting the
+    # first — each slot is just a distinct `provider` string, no schema change needed.
+    slot = slot if slot.isalnum() and len(slot) <= 8 else "1"
+    provider = f"google_{service}" if slot == "1" else f"google_{service}_{slot}"
     redirect_uri = f"{public_base_url(request_base)}/oauth/google/callback"
     scopes = GOOGLE_SCOPE_PRESETS[service][mode]
     state = uuid.uuid4().hex + uuid.uuid4().hex

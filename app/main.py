@@ -232,6 +232,15 @@ async def service_statuses(user_id: str) -> list[dict[str, Any]]:
         connection_status(user_id, "tiktok"),
         connection_status(user_id, "instagram"),
     ]
+    known_google = {"google_gmail", "google_calendar", "google_tasks", "google_youtube"}
+    with connect() as conn:
+        extra_slots = conn.execute(
+            "SELECT DISTINCT provider FROM connections WHERE user_id=? AND provider LIKE 'google\\_%' ESCAPE '\\' ORDER BY provider",
+            (user_id,),
+        ).fetchall()
+    for row in extra_slots:
+        if row["provider"] not in known_google:
+            result.append(connection_status(user_id, row["provider"], app_provider="google"))
     required_fields = {
         "homeassistant": ("base_url", "token"),
         "emby": ("base_url", "api_key"),
@@ -521,16 +530,23 @@ async def admin_permissions_save(target_id: str, request: Request, capability: l
 async def integrations_page(request: Request, user=Depends(current_user)):
     statuses = await service_statuses(user["id"])
     cards = "".join(status_card(s) for s in statuses)
+    def _google_slots_connected(service: str) -> int:
+        prefix = f"google_{service}"
+        return sum(1 for s in statuses if s["provider"] == prefix or s["provider"].startswith(prefix + "_")
+                   if s["status"] in {"connected", "token_expired", "permission_denied", "error"})
     google_buttons = "".join(
         f"<div><strong>Google {esc(service)}</strong> "
         f"<a class='button secondary' href='/oauth/google/{service}/start?mode=read'>Σύνδεση μόνο ανάγνωσης</a> "
-        f"<a class='button' href='/oauth/google/{service}/start?mode=write'>Σύνδεση ανάγνωσης/εγγραφής</a></div>"
+        f"<a class='button' href='/oauth/google/{service}/start?mode=write'>Σύνδεση ανάγνωσης/εγγραφής</a> "
+        + (f"<a class='button secondary' href='/oauth/google/{service}/start?mode=write&slot={_google_slots_connected(service)+1}'>+ Σύνδεση άλλου λογαριασμού</a>"
+           if _google_slots_connected(service) else "")
+        + "</div>"
         for service in GOOGLE_SCOPE_PRESETS
     )
     connection_rows = []
     for status in statuses:
         provider = status["provider"]
-        if provider not in {"google_gmail", "google_calendar", "google_tasks", "google_youtube", "spotify", "tiktok", "instagram"}:
+        if not (provider.startswith("google_") or provider in {"spotify", "tiktok", "instagram"}):
             continue
         scopes = esc(status.get("scopes", ""))
         actions = ""
@@ -689,7 +705,9 @@ async def api_llm_models(user=Depends(current_user)):
 @app.post("/integrations/{provider}/revoke")
 async def integration_revoke(provider: str, request: Request, password: str = Form(...), csrf: str = Form(...), user=Depends(current_user)):
     verify_csrf(request, user, csrf)
-    if provider not in {"google_gmail", "google_calendar", "google_tasks", "google_youtube", "spotify", "tiktok", "instagram"}:
+    google_base_providers = {f"google_{s}" for s in GOOGLE_SCOPE_PRESETS}
+    is_google_slot = any(provider == p or provider.startswith(p + "_") for p in google_base_providers)
+    if not is_google_slot and provider not in {"spotify", "tiktok", "instagram"}:
         raise HTTPException(400, "Unsupported personal connector")
     with connect() as conn:
         stored = conn.execute("SELECT password_hash FROM users WHERE id=?", (user["id"],)).fetchone()
@@ -701,7 +719,7 @@ async def integration_revoke(provider: str, request: Request, password: str = Fo
 
 
 @app.get("/oauth/google/{service}/start")
-async def oauth_google_start(service: str, request: Request, mode: str = "read", user=Depends(current_user)):
+async def oauth_google_start(service: str, request: Request, mode: str = "read", slot: str = "1", user=Depends(current_user)):
     require_capability(user, "integrations.connect")
     capability_map = {
         ("gmail", "read"): "gmail.read", ("gmail", "write"): "gmail.send",
@@ -713,7 +731,7 @@ async def oauth_google_start(service: str, request: Request, mode: str = "read",
     if not capability:
         raise HTTPException(400, "Unsupported Google connector or mode")
     require_capability(user, capability)
-    url = await google_authorization_url(user["id"], service, mode, request_base(request))
+    url = await google_authorization_url(user["id"], service, mode, request_base(request), slot)
     return RedirectResponse(url, 302)
 
 
