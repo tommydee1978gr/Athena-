@@ -42,7 +42,7 @@ COPY app ./app
 COPY ui ./ui
 COPY entrypoint.sh ./entrypoint.sh
 RUN python -m compileall -q /opt/athena/app \
-    && python -c "import fastapi,httpx,cryptography,argon2,PIL,numpy,faster_whisper,piper,speechbrain,torch,torchaudio,sentence_transformers,apscheduler,mcp" \
+    && python -c "import fastapi,httpx,cryptography,argon2,PIL,numpy,faster_whisper,piper,speechbrain,torch,torchaudio,apscheduler,mcp" \
     && /usr/local/bin/CLIProxyAPI --help >/dev/null \
     && ffprobe -version >/dev/null \
     && chmod 0755 /opt/athena/entrypoint.sh /usr/local/bin/CLIProxyAPI \

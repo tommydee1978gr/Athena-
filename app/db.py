@@ -317,5 +317,29 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_routines_owner_enabled ON routines(owner_id, enabled);
             CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled ON mcp_servers(enabled);
             CREATE INDEX IF NOT EXISTS idx_satellite_tokens_user ON satellite_tokens(user_id);
+
+            -- Memory search: SQLite FTS5 keyword index, external-content table synced to
+            -- `memories` via triggers. No embedding model, no network, no download — a
+            -- HuggingFace hiccup can never hang memory search again (see app/memory.py).
+            CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+              text, content='memories', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2'
+            );
+            CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+              INSERT INTO memories_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;
+            CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+              INSERT INTO memories_fts(memories_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+            END;
+            CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+              INSERT INTO memories_fts(memories_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+              INSERT INTO memories_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;
             """
         )
+        # One-time backfill for rows that existed before the FTS5 index was introduced —
+        # triggers only cover inserts/updates/deletes from this point forward. Cheap and
+        # idempotent: skipped once the index is already populated.
+        fts_count = conn.execute("SELECT COUNT(*) AS c FROM memories_fts").fetchone()["c"]
+        memories_count = conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()["c"]
+        if fts_count == 0 and memories_count > 0:
+            conn.execute("INSERT INTO memories_fts(rowid, text) SELECT rowid, text FROM memories")

@@ -359,7 +359,6 @@ def test_private_media_library_is_user_isolated() -> None:
 
 
 def test_memory_namespaces_are_isolated(monkeypatch) -> None:
-    monkeypatch.setattr(memory, "embed_text", lambda text: [1.0, float(len(text) % 7 + 1)])
     init_db()
     now = utcnow()
     u1, u2 = str(uuid.uuid4()), str(uuid.uuid4())
@@ -368,10 +367,10 @@ def test_memory_namespaces_are_isolated(monkeypatch) -> None:
             conn.execute("INSERT INTO users(id,username,display_name,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (uid, name, name, password_hash(ADMIN_PASSWORD), "adult", now, now))
     memory.add_memory(u1, "private", "secret one")
     memory.add_memory(u2, "private", "secret two")
-    memory.add_memory(u1, "family_shared", "family item")
+    memory.add_memory(u1, "family_shared", "family secret")
     found = memory.search_memory(u1, "secret", namespaces=["private", "family_shared"])
     texts = {item["text"] for item in found}
-    assert "secret one" in texts and "family item" in texts
+    assert "secret one" in texts and "family secret" in texts
     assert "secret two" not in texts
 
 
@@ -597,7 +596,6 @@ def test_orchestrator_selects_brain_internally_and_preserves_tool_calls(monkeypa
 
     monkeypatch.setattr(orchestrator, "automatic_route", fake_route)
     monkeypatch.setattr(orchestrator, "chat_completions", fake_chat)
-    monkeypatch.setattr(memory, "embed_text", lambda text: [1.0, 2.0])
     init_db()
     user_id = str(uuid.uuid4())
     now = utcnow()
@@ -642,7 +640,6 @@ def test_orchestrator_automatically_falls_back_to_another_brain_family(monkeypat
 
     monkeypatch.setattr(orchestrator, "automatic_route", fake_route)
     monkeypatch.setattr(orchestrator, "chat_completions", fake_chat)
-    monkeypatch.setattr(memory, "embed_text", lambda text: [1.0, 2.0])
     init_db()
     user_id = str(uuid.uuid4())
     now = utcnow()
