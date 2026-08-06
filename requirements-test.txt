@@ -1,0 +1,3 @@
+-r requirements-core.txt
+-r requirements-voice.txt
+pytest==8.4.2

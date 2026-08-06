@@ -1,0 +1,180 @@
+name: Build, test and publish ATHENA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: athena-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ATHENA_VERSION: 2.4.0-family-brain-router
+      LOCAL_IMAGE: athena-smoke:${{ github.sha }}
+      DIAG_DIR: ${{ github.workspace }}/diagnostics
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$DIAG_DIR"
+          {
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "ref=${GITHUB_REF}"
+            echo "sha=${GITHUB_SHA}"
+            echo "athena_version=${ATHENA_VERSION}"
+          } | tee "$DIAG_DIR/run-context.txt"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.txt
+
+      - name: Install native test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update 2>&1 | tee "$DIAG_DIR/apt-update.log"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg 2>&1 | tee "$DIAG_DIR/apt-install-ffmpeg.log"
+
+      - name: Compile and test source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip 2>&1 | tee "$DIAG_DIR/pip-upgrade.log"
+          python -m pip install -r requirements-test.txt 2>&1 | tee "$DIAG_DIR/pip-install.log"
+          python -m compileall -q app tests 2>&1 | tee "$DIAG_DIR/compile.log"
+          pytest -q --junitxml="$DIAG_DIR/pytest-results.xml" 2>&1 | tee "$DIAG_DIR/pytest.log"
+          python tests/check_browser_js.py 2>&1 | tee "$DIAG_DIR/browser-js-source-syntax.log"
+
+      - name: Pull and record CLIProxyAPI upstream image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull eceasy/cli-proxy-api:latest 2>&1 | tee "$DIAG_DIR/cliproxy-pull.log"
+          docker image inspect eceasy/cli-proxy-api:latest > "$DIAG_DIR/cliproxy-image-inspect.json"
+          cliproxy_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' eceasy/cli-proxy-api:latest)"
+          test -n "$cliproxy_ref"
+          echo "CLIPROXY_IMAGE_REF=$cliproxy_ref" >> "$GITHUB_ENV"
+
+      - name: Build ATHENA image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --progress=plain \
+            --build-arg CLIPROXY_IMAGE="$CLIPROXY_IMAGE_REF" \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg SOURCE_URL="https://github.com/$GITHUB_REPOSITORY" \
+            -t "$LOCAL_IMAGE" . 2>&1 | tee "$DIAG_DIR/docker-build.log"
+          docker image inspect "$LOCAL_IMAGE" > "$DIAG_DIR/athena-image-inspect.json"
+
+      - name: Start container and smoke-test ATHENA
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker rm -f athena-smoke >/dev/null 2>&1 || true
+          docker run -d --name athena-smoke \
+            -p 18000:8000 -p 18317:8317 \
+            -e ATHENA_COOKIE_SECURE=0 \
+            "$LOCAL_IMAGE" | tee "$DIAG_DIR/container-id.txt"
+
+          ready=0
+          for attempt in $(seq 1 180); do
+            if curl -fsS http://127.0.0.1:18000/health > "$DIAG_DIR/health.json" 2>/dev/null; then ready=1; break; fi
+            if ! docker inspect -f '{{.State.Running}}' athena-smoke 2>/dev/null | grep -qx true; then
+              echo "ATHENA container exited before it became ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          cat "$DIAG_DIR/health.json"
+
+          setup_code="$(curl -sS -o "$DIAG_DIR/setup-response.txt" -w '%{http_code}' \
+            -c "$DIAG_DIR/cookies.txt" \
+            -X POST http://127.0.0.1:18000/setup \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'display_name=CI Smoke Admin' \
+            --data-urlencode 'username=cismoke' \
+            --data-urlencode 'password=Athena-CI-Smoke-2026!')"
+          echo "$setup_code" | tee "$DIAG_DIR/setup-http-code.txt"
+          test "$setup_code" = 303
+
+          curl -fsS -b "$DIAG_DIR/cookies.txt" http://127.0.0.1:18000/api/status > "$DIAG_DIR/status.json"
+          curl -fsS -b "$DIAG_DIR/cookies.txt" http://127.0.0.1:18000/graph > "$DIAG_DIR/graph-page.html"
+          grep -q "AthenaGraph" "$DIAG_DIR/graph-page.html" 2>/dev/null || grep -q "graph.js" "$DIAG_DIR/graph-page.html"
+
+      - name: Collect diagnostics
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "job_status=${{ job.status }}"
+          } > "$DIAG_DIR/run-summary.txt"
+          docker ps -a > "$DIAG_DIR/docker-ps.txt" 2>&1
+          docker logs athena-smoke > "$DIAG_DIR/athena-smoke-container.log" 2>&1
+          docker rm -f athena-smoke >/dev/null 2>&1 || true
+          {
+            echo "## ATHENA build result: ${{ job.status }}"
+            echo
+            echo '```'
+            cat "$DIAG_DIR/run-summary.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: athena-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Log in to GitHub Container Registry
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the ATHENA image
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner}/athena"
+          short_sha="${GITHUB_SHA::12}"
+          for tag in latest "sha-${short_sha}"; do
+            docker tag "$LOCAL_IMAGE" "${image}:${tag}"
+            docker push "${image}:${tag}" 2>&1 | tee -a "$DIAG_DIR/docker-push.log"
+          done
+          {
+            echo "image=${image}"
+            echo "tags=latest,sha-${short_sha}"
+          } | tee "$DIAG_DIR/published-image.txt"

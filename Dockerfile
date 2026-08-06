@@ -12,7 +12,7 @@ LABEL org.opencontainers.image.title="ATHENA" \
       org.opencontainers.image.source="$SOURCE_URL" \
       org.opencontainers.image.revision="$VCS_REF" \
       org.opencontainers.image.created="$BUILD_DATE" \
-      org.opencontainers.image.version="2.3.0-beta2-athena-brain-router" \
+      org.opencontainers.image.version="2.4.0-family-brain-router" \
       io.athena.cliproxy.image-ref="$CLIPROXY_IMAGE"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -33,15 +33,16 @@ COPY --from=cliproxy /CLIProxyAPI/CLIProxyAPI /usr/local/bin/CLIProxyAPI
 COPY --from=cliproxy /CLIProxyAPI/config.example.yaml /opt/cliproxy/config.example.yaml
 
 WORKDIR /opt/athena
-COPY requirements.txt ./
+COPY requirements-core.txt requirements-voice.txt ./
 RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0 torchaudio==2.10.0 \
-    && python -m pip install -r requirements.txt
+    && python -m pip install -r requirements-core.txt -r requirements-voice.txt
 
 COPY app ./app
+COPY ui ./ui
 COPY entrypoint.sh ./entrypoint.sh
 RUN python -m compileall -q /opt/athena/app \
-    && python -c "import fastapi,httpx,cryptography,argon2,PIL,numpy,faster_whisper,piper,speechbrain,torch,torchaudio,sentence_transformers" \
+    && python -c "import fastapi,httpx,cryptography,argon2,PIL,numpy,faster_whisper,piper,speechbrain,torch,torchaudio,sentence_transformers,apscheduler,mcp" \
     && /usr/local/bin/CLIProxyAPI --help >/dev/null \
     && ffprobe -version >/dev/null \
     && chmod 0755 /opt/athena/entrypoint.sh /usr/local/bin/CLIProxyAPI \
