@@ -5,6 +5,11 @@ on:
   push:
     branches:
       - main
+  schedule:
+    # Weekly rebuild even with zero ATHENA code changes, so a new
+    # eceasy/cli-proxy-api:latest (or Python base image security patch)
+    # gets picked up and published without anyone remembering to push.
+    - cron: '0 4 * * 1'
 
 concurrency:
   group: athena-main
