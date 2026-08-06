@@ -47,12 +47,22 @@ async def elevenlabs_synthesize(text: str, voice_id: str | None = None) -> bytes
     if not cfg or not cfg.get("api_key"):
         raise VoiceBackendError("not_configured", "ElevenLabs is not configured — add an API key in Integrations")
     url = ELEVENLABS_TTS_URL.format(voice_id=voice_id or cfg.get("default_voice_id") or ELEVENLABS_DEFAULT_VOICE_ID)
+    # Without voice_settings ElevenLabs falls back to a flat, low-expressiveness
+    # default that reads as robotic/grating — these are the values ElevenLabs'
+    # own docs recommend as a natural-sounding starting point, not the raw API
+    # default. All four are user-overridable via system_settings("voice").
+    settings = {
+        "stability": float(cfg.get("stability", 0.45)),
+        "similarity_boost": float(cfg.get("similarity_boost", 0.8)),
+        "style": float(cfg.get("style", 0.35)),
+        "use_speaker_boost": bool(cfg.get("use_speaker_boost", True)),
+    }
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 url,
                 headers={"xi-api-key": cfg["api_key"], "Accept": "audio/mpeg", "Content-Type": "application/json"},
-                json={"text": text, "model_id": cfg.get("model_id", "eleven_multilingual_v2")},
+                json={"text": text, "model_id": cfg.get("model_id", "eleven_multilingual_v2"), "voice_settings": settings},
             )
     except httpx.RequestError as exc:
         raise VoiceBackendError("provider_unavailable", str(exc)) from exc
