@@ -38,6 +38,31 @@ html, body {
 }
 #graphCanvas.dragging { cursor: grabbing; }
 
+#hudNav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: rgba(13, 19, 37, 0.85);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+#hudNav .mark { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; }
+#hudNav nav { display: flex; flex-wrap: wrap; gap: 2px; }
+#hudNav nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 12.5px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+#hudNav nav a:hover { color: var(--text); background: #ffffff0c; }
+#hudNav nav a.current { color: var(--text); background: var(--card-2); }
+
 .panel {
   position: fixed;
   background: rgba(21, 28, 49, 0.88);
@@ -50,10 +75,10 @@ html, body {
 
 /* left — inspector */
 #inspector {
-  top: 16px;
+  top: 60px;
   left: 16px;
   width: 300px;
-  max-height: calc(100vh - 100px);
+  max-height: calc(100vh - 144px);
   overflow-y: auto;
 }
 #inspector h2 { margin: 0 0 6px; font-size: 15px; }
@@ -68,7 +93,7 @@ html, body {
 
 /* right — filters + reactor */
 #rightPanel {
-  top: 16px;
+  top: 60px;
   right: 16px;
   width: 230px;
 }

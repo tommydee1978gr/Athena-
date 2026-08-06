@@ -1591,11 +1591,19 @@ async def actions_page(request: Request, user=Depends(current_user)):
 @app.get("/graph", response_class=HTMLResponse)
 async def graph_page(request: Request, user=Depends(current_user)):
     require_capability(user, "creative.read")
+    admin_nav = "<a href='/admin/users'>Χρήστες</a><a href='/mcp'>MCP</a>" if user["role"] == "admin" else ""
     shell = f"""<!doctype html><html lang='el'><head><meta charset='utf-8'>
     <meta name='viewport' content='width=device-width,initial-scale=1'>
     <title>Γράφος · ATHENA</title>
     <link rel='stylesheet' href='/static/styles.css'>
     </head><body>
+    <header id='hudNav'>
+      <img class='mark' src='/static/avatar-mark.jpg' alt=''>
+      <nav><a href='/'>Αρχική</a><a class='current' href='/graph'>Γράφος</a><a href='/integrations'>Συνδέσεις</a>
+      <a href='/family'>Οικογένεια</a><a href='/location'>Τοποθεσία</a><a href='/actions'>Ενέργειες</a>
+      <a href='/media-library'>Media</a><a href='/memory'>Μνήμη</a><a href='/voice'>Φωνή</a>
+      <a href='/releases'>DistroKid</a>{admin_nav}<a href='/account'>Λογαριασμός</a><a href='/logout'>Έξοδος</a></nav>
+    </header>
     <canvas id='graphCanvas'></canvas>
     <div id='inspector' class='panel'>
       <div id='inspectorBody'><p class='empty'>Φόρτωση…</p></div>
