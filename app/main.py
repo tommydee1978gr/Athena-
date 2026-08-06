@@ -575,6 +575,7 @@ async def integrations_page(request: Request, user=Depends(current_user)):
         tiktok = get_app_config("tiktok") or {}
         instagram = get_app_config("instagram") or {}
         elevenlabs = get_app_config("elevenlabs") or {}
+        picovoice = get_app_config("picovoice") or {}
         ha = get_app_config("homeassistant") or {}
         emby = get_app_config("emby") or {}
         asterisk = get_app_config("asterisk") or {}
@@ -595,6 +596,7 @@ async def integrations_page(request: Request, user=Depends(current_user)):
         <label>Stability (0–1, χαμηλότερο = πιο εκφραστικό αλλά λιγότερο σταθερό)<input name='elevenlabs_stability' value='{esc(elevenlabs.get("stability",0.45))}'></label>
         <label>Similarity boost (0–1)<input name='elevenlabs_similarity_boost' value='{esc(elevenlabs.get("similarity_boost",0.8))}'></label>
         <label>Style (0–1, υψηλότερο = πιο δραματικό, μπορεί να γίνει ασταθές)<input name='elevenlabs_style' value='{esc(elevenlabs.get("style",0.35))}'></label>{secret_note}
+        <h3>Wake word detector — Porcupine (on-device, "Jarvis")</h3><p><small>Δωρεάν AccessKey από <a href='https://console.picovoice.ai' target='_blank' rel='noopener'>console.picovoice.ai</a>. Τρέχει τοπικά στον browser — κανένας ήχος δεν φεύγει πουθενά μέχρι να ειπωθεί η λέξη "Jarvis".</small></p><label>AccessKey<input name='picovoice_access_key' type='password' value='{esc(picovoice.get("access_key","") and "•" * 8)}'></label>{secret_note}
         <h3>Local voice runtime</h3><label>Whisper model<input name='voice_stt_model' value='{esc(voice_cfg.get('stt_model','small'))}'></label><label>Device<input name='voice_stt_device' value='{esc(voice_cfg.get('stt_device','cpu'))}'></label><label>Compute type<input name='voice_stt_compute_type' value='{esc(voice_cfg.get('stt_compute_type','int8'))}'></label><label>Piper voice<input name='voice_tts_voice' value='{esc(voice_cfg.get('tts_voice','el_GR-rapunzelina-low'))}'></label><label>Wake phrase<input name='voice_wake_phrase' value='{esc(voice_cfg.get('wake_phrase','Αθηνά'))}'></label>
         <button>Αποθήκευση ρυθμίσεων</button></form></div>"""
     body = f"<h1>Συνδέσεις</h1><div class='grid'>{cards}</div>{personal}{admin}"
@@ -619,6 +621,7 @@ async def integrations_config(request: Request, csrf: str = Form(...), user=Depe
             "similarity_boost": float(form.get("elevenlabs_similarity_boost") or 0.8),
             "style": float(form.get("elevenlabs_style") or 0.35),
         },
+        "picovoice": {"access_key": form.get("picovoice_access_key")},
         "homeassistant": {"base_url": form.get("ha_base_url"), "token": form.get("ha_token"), "allowed_domains": allowed_domains or None},
         "emby": {"base_url": form.get("emby_base_url"), "api_key": form.get("emby_api_key"), "user_id": form.get("emby_user_id")},
         "asterisk": {"host": form.get("asterisk_host"), "port": int(form.get("asterisk_port") or 5038), "username": form.get("asterisk_username"), "secret": form.get("asterisk_secret"), "context": form.get("asterisk_context") or "from-internal", "tls": form.get("asterisk_tls") == "true"},
@@ -1610,6 +1613,7 @@ async def actions_page(request: Request, user=Depends(current_user)):
 async def graph_page(request: Request, user=Depends(current_user)):
     require_capability(user, "creative.read")
     admin_nav = "<a href='/admin/users'>Χρήστες</a><a href='/mcp'>MCP</a>" if user["role"] == "admin" else ""
+    picovoice_key = (get_app_config("picovoice") or {}).get("access_key") or ""
     shell = f"""<!doctype html><html lang='el'><head><meta charset='utf-8'>
     <meta name='viewport' content='width=device-width,initial-scale=1'>
     <title>Γράφος · ATHENA</title>
@@ -1635,14 +1639,18 @@ async def graph_page(request: Request, user=Depends(current_user)):
       <button id='refreshButton' style='width:100%;margin-top:10px;background:var(--card-2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px;cursor:pointer'>↻ Ανανέωση</button>
     </div>
     <div id='askBar' class='panel'>
+      <button id='wakeToggle' title='Άκουγε πάντα για "Jarvis"'>👂</button>
       <button id='micButton' title='Μικρόφωνο'>🎙</button>
       <input id='askInput' type='text' autocomplete='off'>
       <button id='askSend' class='primary'>Ρώτα</button>
     </div>
     <div id='answerCard' class='panel'></div>
-    <script>window.ATHENA_CSRF="{user['csrf_token']}";</script>
+    <script>window.ATHENA_CSRF="{user['csrf_token']}";window.ATHENA_PICOVOICE_KEY={json.dumps(picovoice_key)};</script>
     <script src='/static/graph.js'></script>
     <script src='/static/app.js'></script>
+    <script src='/static/vendor/web-voice-processor.js'></script>
+    <script src='/static/vendor/porcupine-web.js'></script>
+    <script src='/static/wakeword.js'></script>
     </body></html>"""
     return HTMLResponse(shell)
 

@@ -158,6 +158,8 @@ html, body {
 #askBar button:hover { border-color: var(--accent); }
 #askBar button.primary { background: var(--accent); color: #0b1020; border-color: var(--accent); font-weight: 600; }
 #askBar button.recording { background: var(--bad); border-color: var(--bad); color: #0b1020; }
+#wakeToggle.recording { background: var(--accent); border-color: var(--accent); color: #0b1020; }
+#wakeToggle:disabled { cursor: not-allowed; }
 #exampleHint { position: fixed; bottom: 68px; left: 50%; transform: translateX(-50%); font-size: 12px; color: var(--muted); pointer-events: none; }
 
 #answerCard {
