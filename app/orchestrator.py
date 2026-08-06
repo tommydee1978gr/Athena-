@@ -242,9 +242,15 @@ async def execute_tool(user, name: str, args: dict[str, Any]) -> Any:
             namespaces.append("project_shared")
         if is_allowed(user, "memory.system"):
             namespaces.append("system")
-        return search_memory(user["id"], args["query"], namespaces=namespaces, limit=int(args.get("limit", 8)))
+        try:
+            return search_memory(user["id"], args["query"], namespaces=namespaces, limit=int(args.get("limit", 8)))
+        except Exception as exc:
+            return {"status": "model_unavailable", "error": str(exc)}
     if name == "memory_add_private" and is_allowed(user, "memory.private"):
-        return add_memory(user["id"], "private", args["text"], {"source": "assistant_tool"})
+        try:
+            return add_memory(user["id"], "private", args["text"], {"source": "assistant_tool"})
+        except Exception as exc:
+            return {"status": "model_unavailable", "error": str(exc)}
     if name == "family_tasks_list" and is_allowed(user, "family.tasks.read"):
         status = args.get("status", "open")
         with connect() as conn:

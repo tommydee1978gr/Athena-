@@ -121,7 +121,10 @@ async def run_daily_reflection(user_id: str) -> dict[str, Any]:
             continue
         reflection, raw_suggestions = _parse_suggestions(content)
         if reflection:
-            add_memory(user_id, "private", reflection, {"source": "daily_reflection", "date": utcnow()[:10]})
+            try:
+                add_memory(user_id, "private", reflection, {"source": "daily_reflection", "date": utcnow()[:10]})
+            except Exception as exc:
+                logger.info("daily reflection memory save skipped for %s: %s", user_id, exc)
         created = []
         for suggestion in raw_suggestions[:1]:  # at most one, even if the model ignores the instruction
             try:

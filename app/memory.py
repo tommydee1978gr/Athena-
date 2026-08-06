@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
 from .config import MODEL_DIR
@@ -11,6 +13,17 @@ from .db import connect, utcnow
 
 _model = None
 _model_lock = threading.Lock()
+_model_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="embed-model-load")
+# Model load timeout: first call caches the model to disk (MODEL_DIR/embeddings) so this
+# path is only hit again if that cache is missing/wiped. A HuggingFace network hiccup must
+# never hang the whole /api/ask turn for a minute+ waiting on huggingface_hub's internal
+# retry backoff — bail out fast and let the caller's except-block degrade gracefully instead.
+_MODEL_LOAD_TIMEOUT_S = 8
+
+
+def _load_model_blocking():
+    from sentence_transformers import SentenceTransformer
+    return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", cache_folder=str(MODEL_DIR / "embeddings"))
 
 
 def _load_model():
@@ -19,8 +32,12 @@ def _load_model():
         return _model
     with _model_lock:
         if _model is None:
-            from sentence_transformers import SentenceTransformer
-            _model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", cache_folder=str(MODEL_DIR / "embeddings"))
+            os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "5")
+            future = _model_executor.submit(_load_model_blocking)
+            try:
+                _model = future.result(timeout=_MODEL_LOAD_TIMEOUT_S)
+            except FutureTimeoutError as exc:
+                raise RuntimeError("Embedding model load timed out (network to HuggingFace unavailable?)") from exc
     return _model
 
 
