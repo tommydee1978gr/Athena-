@@ -86,7 +86,8 @@ from .notify import add_channel as add_notify_channel, list_channels as list_not
 from .orchestrator import ACTION_CAPABILITIES, ask
 from .permissions import ALL_CAPABILITIES, is_allowed, permission_snapshot, set_permission
 from .learning import run_daily_reflection
-from .mcp_client import add_server as add_mcp_server, list_servers as list_mcp_servers, refresh_tool_cache, remove_server as remove_mcp_server, set_enabled as set_mcp_server_enabled
+from .mcp_client import add_server as add_mcp_server, call_cached_tool, list_servers as list_mcp_servers, refresh_tool_cache, remove_server as remove_mcp_server, set_enabled as set_mcp_server_enabled
+from .project_files import list_files as list_project_files, make_directory as make_project_directory, mounted as project_files_mounted, move_path as move_project_path, read_text_file as read_project_file, save_media_as_project_file, write_text_file as write_project_text_file
 from .routines import create_routine, delete_routine as delete_routine_row, get_routine, list_routines, set_enabled as set_routine_enabled
 from .scheduler import schedule_routine, start_scheduler, stop_scheduler, unschedule_routine
 from .satellite import run_satellite_session
@@ -2019,7 +2020,42 @@ async def api_cancel_action_proposal(proposal_id: str, request: Request, user=De
     return {"status": "cancelled", "proposal_id": proposal_id}
 
 
+class ProjectWriteTextRequest(BaseModel):
+    relative: str = Field(min_length=1, max_length=400)
+    content: str = Field(max_length=200_000)
+    overwrite: bool = False
+
+
+class ProjectMkdirRequest(BaseModel):
+    relative: str = Field(min_length=1, max_length=400)
+
+
+class ProjectMoveRequest(BaseModel):
+    source_relative: str = Field(min_length=1, max_length=400)
+    dest_relative: str = Field(min_length=1, max_length=400)
+
+
+class ProjectSaveMediaRequest(BaseModel):
+    media_id: str = Field(min_length=1, max_length=80)
+    dest_relative: str = Field(min_length=1, max_length=400)
+    overwrite: bool = False
+
+
 async def _execute_proposed_action(user, action: str, payload: dict[str, Any]) -> Any:
+    if action.startswith("mcp_"):
+        return await call_cached_tool(action, payload)
+    if action == "project_files.write_text":
+        model = ProjectWriteTextRequest.model_validate(payload)
+        return write_project_text_file(model.relative, model.content, overwrite=model.overwrite)
+    if action == "project_files.mkdir":
+        model = ProjectMkdirRequest.model_validate(payload)
+        return make_project_directory(model.relative)
+    if action == "project_files.move":
+        model = ProjectMoveRequest.model_validate(payload)
+        return move_project_path(model.source_relative, model.dest_relative)
+    if action == "project_files.save_media":
+        model = ProjectSaveMediaRequest.model_validate(payload)
+        return save_media_as_project_file(user["id"], model.media_id, model.dest_relative, overwrite=model.overwrite)
     if action == "gmail.send":
         model = GmailSendRequest.model_validate(payload)
         return await gmail_send(user["id"], **model.model_dump())
@@ -2206,6 +2242,68 @@ class MCPServerRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9 _-]+$")
     transport: Literal["stdio", "http"]
     config: dict[str, Any]
+    requires_confirmation: bool = True
+
+
+@app.get("/mcp", response_class=HTMLResponse)
+async def mcp_page(request: Request, user=Depends(require_admin)):
+    servers = list_mcp_servers()
+    rows = "".join(
+        f"<tr><td>{esc(s['name'])}</td><td>{esc(s['transport'])}</td>"
+        f"<td>{'✅' if s['requires_confirmation'] else '⚠️ αυτόνομο'}</td>"
+        f"<td><span class='status {'ready' if s['enabled'] else 'not_configured'}'>{'ενεργό' if s['enabled'] else 'ανενεργό'}</span></td>"
+        f"<td><form method='post' action='/mcp/{esc(s['id'])}/delete' style='display:inline'><input type='hidden' name='csrf' value='{esc(user['csrf_token'])}'><button class='danger'>Αφαίρεση</button></form></td></tr>"
+        for s in servers
+    ) or "<tr><td colspan='5' class='muted'>Κανένα MCP server ακόμα.</td></tr>"
+    body = f"""<h1>MCP Servers</h1>
+    <p class='muted'>Εξωτερικά εργαλεία (Higgsfield, OpenArt, ή οτιδήποτε άλλο μιλάει MCP) γίνονται διαθέσιμα στην ATHENA χωρίς αλλαγή κώδικα. Αν ένα εργαλείο μπορεί να κοστίσει (π.χ. δημιουργία εικόνας/video), άφησε το "Χρειάζεται έγκριση" ενεργό — η ATHENA θα ζητάει επιβεβαίωση στο <a href='/actions'>Ενέργειες</a> πριν κάθε κλήση.</p>
+    <div class='card'><table><tr><th>Όνομα</th><th>Transport</th><th>Έγκριση</th><th>Κατάσταση</th><th></th></tr>{rows}</table></div>
+    <div class='card'><h2>Νέο MCP server</h2>
+    <form method='post' action='/mcp'>
+    <input type='hidden' name='csrf' value='{esc(user['csrf_token'])}'>
+    <label>Όνομα<input name='name' required placeholder='Higgsfield'></label>
+    <label>Transport<select name='transport'><option value='http'>http (URL, π.χ. cloud service)</option><option value='stdio'>stdio (τοπική εντολή)</option></select></label>
+    <label>URL (για http)<input name='url' placeholder='https://mcp.higgsfield.ai/...'></label>
+    <label>Authorization header value (για http, προαιρετικό — π.χ. "Bearer sk-...")<input name='auth_header' type='password'></label>
+    <label>Εντολή (για stdio, π.χ. python -m my_server)<input name='command'></label>
+    <label class='inline'><input type='checkbox' name='requires_confirmation' value='true' checked> Χρειάζεται έγκριση πριν κάθε κλήση (σύσταση: ναι για ό,τι κοστίζει)</label>
+    <button>Προσθήκη</button></form></div>"""
+    return layout("MCP Servers", body, user, user["csrf_token"])
+
+
+@app.post("/mcp")
+async def mcp_create_form(request: Request, user=Depends(require_admin)):
+    form = await request.form()
+    verify_csrf(request, user, str(form.get("csrf") or ""))
+    name = str(form.get("name") or "").strip()
+    transport = str(form.get("transport") or "http")
+    requires_confirmation = form.get("requires_confirmation") == "true"
+    if transport == "http":
+        url = str(form.get("url") or "").strip()
+        config: dict[str, Any] = {"url": url}
+        auth_header = str(form.get("auth_header") or "").strip()
+        if auth_header:
+            config["headers"] = {"Authorization": auth_header}
+    else:
+        command = str(form.get("command") or "").strip()
+        config = {"command": command.split()}
+    try:
+        add_mcp_server(name, transport, config, user["id"], requires_confirmation)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    await refresh_tool_cache(force=True)
+    audit(user["id"], "mcp_server_added", {"name": name, "transport": transport}, client_ip(request))
+    return RedirectResponse("/mcp", 303)
+
+
+@app.post("/mcp/{server_id}/delete")
+async def mcp_delete_form(server_id: str, request: Request, user=Depends(require_admin)):
+    form = await request.form()
+    verify_csrf(request, user, str(form.get("csrf") or ""))
+    ok = remove_mcp_server(server_id)
+    await refresh_tool_cache(force=True)
+    audit(user["id"], "mcp_server_removed", {"server_id": server_id, "found": ok}, client_ip(request))
+    return RedirectResponse("/mcp", 303)
 
 
 @app.get("/api/mcp/servers")
@@ -2217,7 +2315,7 @@ async def api_mcp_servers_list(user=Depends(require_admin)):
 async def api_mcp_servers_create(payload: MCPServerRequest, request: Request, user=Depends(require_admin)):
     verify_csrf(request, user)
     try:
-        server = add_mcp_server(payload.name, payload.transport, payload.config, user["id"])
+        server = add_mcp_server(payload.name, payload.transport, payload.config, user["id"], payload.requires_confirmation)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     await refresh_tool_cache(force=True)

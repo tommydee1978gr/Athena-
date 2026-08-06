@@ -12,7 +12,7 @@ LABEL org.opencontainers.image.title="ATHENA" \
       org.opencontainers.image.source="$SOURCE_URL" \
       org.opencontainers.image.revision="$VCS_REF" \
       org.opencontainers.image.created="$BUILD_DATE" \
-      org.opencontainers.image.version="2.4.0-family-brain-router" \
+      org.opencontainers.image.version="2.5.0-family-brain-router" \
       io.athena.cliproxy.image-ref="$CLIPROXY_IMAGE"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

@@ -1,6 +1,6 @@
 {
-  "version": "2.4.0-family-brain-router",
-  "status": "not yet deployed — this file describes the target, not a running system",
+  "version": "2.5.0-family-brain-router",
+  "status": "deployed on Unraid, LLM brain confirmed working end to end",
   "deployment": {
     "own_images": 1,
     "containers": 1,

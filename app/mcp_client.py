@@ -22,6 +22,8 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
@@ -40,7 +42,7 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", text.strip())[:60] or "server"
 
 
-def add_server(name: str, transport: str, config: dict[str, Any], created_by: str) -> dict[str, Any]:
+def add_server(name: str, transport: str, config: dict[str, Any], created_by: str, requires_confirmation: bool = True) -> dict[str, Any]:
     if transport not in {"stdio", "http"}:
         raise ValueError("transport must be stdio or http")
     if transport == "stdio" and not config.get("command"):
@@ -51,17 +53,17 @@ def add_server(name: str, transport: str, config: dict[str, Any], created_by: st
     now = utcnow()
     with connect() as conn:
         conn.execute(
-            "INSERT INTO mcp_servers(id,name,transport,config_enc,enabled,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-            (server_id, name.strip(), transport, encrypt_json(config), 1, created_by, now, now),
+            "INSERT INTO mcp_servers(id,name,transport,config_enc,enabled,requires_confirmation,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (server_id, name.strip(), transport, encrypt_json(config), 1, int(requires_confirmation), created_by, now, now),
         )
     _invalidate_cache()
-    return {"id": server_id, "name": name, "transport": transport}
+    return {"id": server_id, "name": name, "transport": transport, "requires_confirmation": requires_confirmation}
 
 
 def list_servers() -> list[dict[str, Any]]:
     with connect() as conn:
-        rows = conn.execute("SELECT id,name,transport,enabled,created_at FROM mcp_servers ORDER BY created_at DESC").fetchall()
-    return [dict(row) for row in rows]
+        rows = conn.execute("SELECT id,name,transport,enabled,requires_confirmation,created_at FROM mcp_servers ORDER BY created_at DESC").fetchall()
+    return [{**dict(row), "requires_confirmation": bool(row["requires_confirmation"])} for row in rows]
 
 
 def remove_server(server_id: str) -> bool:
@@ -95,10 +97,19 @@ async def _session_for(transport: str, config: dict[str, Any]):
                 await session.initialize()
                 yield session
     else:
-        async with streamable_http_client(config["url"]) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
+        # Most hosted MCP servers (Higgsfield, OpenArt, ...) need an API key
+        # on every request — streamable_http_client takes a pre-configured
+        # httpx client rather than a headers dict directly.
+        headers = config.get("headers") or {}
+        http_client = httpx.AsyncClient(headers=headers, timeout=60) if headers else None
+        try:
+            async with streamable_http_client(config["url"], http_client=http_client) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    yield session
+        finally:
+            if http_client is not None:
+                await http_client.aclose()
 
 
 def _invalidate_cache() -> None:
@@ -112,7 +123,7 @@ async def refresh_tool_cache(force: bool = False) -> int:
     if not force and _tool_cache and (time.monotonic() - _cache_refreshed_at) < _CACHE_TTL_SECONDS:
         return len(_tool_cache)
     with connect() as conn:
-        rows = conn.execute("SELECT id,name,transport,config_enc FROM mcp_servers WHERE enabled=1").fetchall()
+        rows = conn.execute("SELECT id,name,transport,config_enc,requires_confirmation FROM mcp_servers WHERE enabled=1").fetchall()
     fresh: dict[str, dict[str, Any]] = {}
     for row in rows:
         server_id, name, transport = row["id"], row["name"], row["transport"]
@@ -131,6 +142,10 @@ async def refresh_tool_cache(force: bool = False) -> int:
                 "tool_name": tool.name,
                 "description": (tool.description or "")[:1000],
                 "input_schema": tool.input_schema or {"type": "object", "properties": {}},
+                # Defaults to True — an MCP server we know nothing about is
+                # treated as capable of spending money until an admin
+                # explicitly marks it safe to auto-run.
+                "requires_confirmation": bool(row["requires_confirmation"]),
             }
     _tool_cache.clear()
     _tool_cache.update(fresh)
@@ -143,17 +158,23 @@ def cached_tools_as_functions() -> list[dict[str, Any]]:
     """Synchronous — reads whatever is already in the cache. Call
     refresh_tool_cache() from the scheduler to keep it warm; this function
     never blocks on network/subprocess I/O itself."""
-    return [
-        {
+    tools = []
+    for qualified, entry in _tool_cache.items():
+        note = " Requires human confirmation before it actually runs — call it, then tell the user it's pending approval." if entry["requires_confirmation"] else ""
+        tools.append({
             "type": "function",
             "function": {
                 "name": qualified,
-                "description": f"[MCP: {entry['server_name']}] {entry['description']}",
+                "description": f"[MCP: {entry['server_name']}] {entry['description']}{note}",
                 "parameters": entry["input_schema"],
             },
-        }
-        for qualified, entry in _tool_cache.items()
-    ]
+        })
+    return tools
+
+
+def tool_requires_confirmation(qualified_name: str) -> bool:
+    entry = _tool_cache.get(qualified_name)
+    return bool(entry and entry["requires_confirmation"])
 
 
 async def call_cached_tool(qualified_name: str, arguments: dict[str, Any]) -> Any:

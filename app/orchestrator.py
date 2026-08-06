@@ -21,7 +21,7 @@ from .integrations import (
     youtube_channel,
 )
 from .creative import add_prompt, create_project, list_projects, prompts_that_worked, update_project_status
-from .mcp_client import call_cached_tool, cached_tools_as_functions
+from .mcp_client import call_cached_tool, cached_tools_as_functions, tool_requires_confirmation as mcp_tool_requires_confirmation
 from .memory import add_memory, search_memory
 from .project_files import list_files as list_project_files, mounted as project_files_mounted, read_text_file as read_project_file
 from .permissions import is_allowed
@@ -71,6 +71,10 @@ ACTION_CAPABILITIES = {
     "tiktok.publish": "tiktok.publish",
     "instagram.publish": "instagram.publish",
     "homeassistant.service": "homeassistant.control",
+    "project_files.write_text": "creative.write",
+    "project_files.mkdir": "creative.write",
+    "project_files.move": "creative.write",
+    "project_files.save_media": "creative.write",
 }
 
 # Emby and Asterisk are the two explicit exceptions Tommy asked for: ATHENA
@@ -360,6 +364,15 @@ async def execute_tool(user, name: str, args: dict[str, Any]) -> Any:
             )
         return {"status": "confirmation_required", "proposal_id": proposal_id, "action": action, "summary": summary, "review_url": "/actions"}
     if name.startswith("mcp_") and is_allowed(user, "mcp.use"):
+        if mcp_tool_requires_confirmation(name):
+            proposal_id = str(uuid.uuid4())
+            now = utcnow()
+            with connect() as conn:
+                conn.execute(
+                    "INSERT INTO action_proposals(id,user_id,action,payload_json,status,result_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (proposal_id, user["id"], name, json.dumps({"payload": args, "summary": f"MCP tool: {name}"}, ensure_ascii=False), "pending", None, now, now),
+                )
+            return {"status": "confirmation_required", "proposal_id": proposal_id, "action": name, "review_url": "/actions"}
         return await call_cached_tool(name, args)
     return {"status": "permission_denied", "error": "Tool is not available to this user"}
 

@@ -280,6 +280,7 @@ def init_db() -> None:
               transport TEXT NOT NULL CHECK(transport IN ('stdio','http')),
               config_enc BLOB NOT NULL,
               enabled INTEGER NOT NULL DEFAULT 1,
+              requires_confirmation INTEGER NOT NULL DEFAULT 1,
               created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL

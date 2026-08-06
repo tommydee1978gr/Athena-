@@ -138,7 +138,7 @@ def esc(value: Any) -> str:
 def layout(title: str, body: str, user: Any = None, csrf: str = "", centered: bool = False) -> HTMLResponse:
     nav = ""
     if user:
-        admin = "<a href='/admin/users'>Χρήστες</a>" if user["role"] == "admin" else ""
+        admin = "<a href='/admin/users'>Χρήστες</a><a href='/mcp'>MCP</a>" if user["role"] == "admin" else ""
         nav = (
             "<nav>"
             "<a href='/'>Αρχική</a><a href='/graph'>Γράφος</a><a href='/integrations'>Συνδέσεις</a>"

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "ATHENA"
-APP_VERSION = "2.4.0-family-brain-router"
+APP_VERSION = "2.5.0-family-brain-router"
 
 # Local dev default: a folder next to the project (works on Windows/macOS/Linux
 # without root permissions). The Dockerfile always sets ATHENA_CONFIG_DIR=/config

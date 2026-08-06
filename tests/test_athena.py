@@ -148,7 +148,7 @@ def test_route_inventory_setup_and_truthful_initial_status() -> None:
     with TestClient(app) as client:
         bootstrap(client)
         data = client.get("/api/status").json()
-        assert data["version"] == APP_VERSION == "2.4.0-family-brain-router"
+        assert data["version"] == APP_VERSION == "2.5.0-family-brain-router"
         statuses = {item["provider"]: item["status"] for item in data["services"]}
         for provider in ("google_gmail", "google_calendar", "google_tasks", "google_youtube", "spotify", "tiktok"):
             assert statuses[provider] == "not_configured"
