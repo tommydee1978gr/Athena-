@@ -20,3 +20,4 @@ data/demo/
 Thumbs.db
 .vscode/
 .idea/
+docs/unraid-athena-live-backup-*.json
