@@ -142,11 +142,17 @@ def _task_profile(question: str) -> dict[str, Any]:
     remains the default fallback for anything ambiguous or substantial — an organizer's
     job when nothing else clearly claims the task."""
     value = question.lower()
+    # "write"/"create"/"γράψε"/"κάνε"/"φτιάξ" used to be in here too, but they're
+    # generic verbs that show up in almost any request regardless of domain
+    # ("γράψε μου ένα πλάνο" is a planning/organizer task, not an execution
+    # one) — found live 2026-08-08 hijacking Claude-appropriate planning
+    # requests to Codex just because they contained "write"/"γράψε". Kept
+    # only keywords that are specifically about doing/building/fixing a
+    # concrete technical thing, not generic content generation.
     execution_work = (
         "code", "python", "docker", "github", "unraid", "api", "yaml", "json", "sql", "bug", "compile",
-        "build", "fix", "implement", "write", "create", "send", "upload", "run", "execute", "deploy",
-        "κώδικ", "προγραμματ", "σφάλμα", "workflow", "script", "φτιάξ", "στείλ", "ανέβασ", "εκτέλεσ",
-        "κάνε", "διόρθωσ", "γράψε",
+        "build", "fix", "implement", "send", "upload", "run", "execute", "deploy",
+        "κώδικ", "προγραμματ", "σφάλμα", "workflow", "script", "στείλ", "ανέβασ", "εκτέλεσ", "διόρθωσ",
     )
     google_multimodal = (
         "image", "photo", "video", "pdf", "vision", "map", "youtube", "gmail", "calendar", "google",
