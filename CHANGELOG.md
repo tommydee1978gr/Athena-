@@ -2,6 +2,10 @@
 
 Ένα entry ανά ουσιαστική αλλαγή/εύρημα — ώστε να μη χάνεται τίποτα σε memory gap μεταξύ sessions. Βλ. και `ATHENA.md` (κανόνες) και `docs/` (βαθύτερα τεχνικά σημειώματα).
 
+## 2026-08-08
+
+- **MCP OAuth (`720bbf4`) redeployed και επαληθευμένο ζωντανά** — `docker inspect` revision label == HEAD, `/health` OK, τα δύο MCP server rows (Higgsfield/OpenArt) επιβίωσαν το redeploy (persistent volume). `list_servers()` επιβεβαιωμένο ζωντανά μέσα στο container: και οι δύο δείχνουν `oauth_status: not_applicable` γιατί ο browser-based consent step δεν έχει γίνει ακόμα — εκκρεμεί από τον Tommy (login στο δικό του Higgsfield/OpenArt account μέσω `/mcp` → "Σύνδεση OAuth", δεν αυτοματοποιείται μέσω SSH/curl).
+
 ## 2026-08-07
 
 - **Wake word: Jarvis (Porcupine, English-only) → πάντα-ενεργό Ελληνικό "Αθηνά"** (`889d04c`). Το Porcupine δεν υποστηρίζει Ελληνικά· αντικαταστάθηκε με το ήδη υπάρχον satellite protocol (`app/satellite.py`, faster-whisper, wake phrase ήδη default "Αθηνά") συνδεδεμένο τώρα και στο browser tab μέσω νέου cookie-auth path στο `/ws/voice/satellite`. Το 👂 στο `/graph` ξεκινάει να ακούει αυτόματα στο load — όχι πια κουμπί για arm. Vendor bundles (`porcupine-web.js`, `web-voice-processor.js`) αφαιρέθηκαν.
