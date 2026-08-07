@@ -6,7 +6,15 @@
 
 Το template `my-ATHENA.xml` **υπάρχει** στο `/boot/config/plugins/dockerMan/templates-user/` και είναι σωστά γραμμένο (Repository, Registry, ports, paths, env vars — όλα ταιριάζουν με τον live container). Ο ίδιος ο container όμως δημιουργήθηκε με απευθείας `docker run` μέσω SSH (προηγούμενο session), όχι μέσω του Unraid GUI.
 
-**Διόρθωση προηγούμενης υπόθεσης**: αρχικά υπέθεσα ότι λείπει το label `net.unraid.docker.managed=dockerman`. Έλεγξα το HomeAssistant (σίγουρα φτιαγμένο σωστά μέσω Unraid GUI) και **ούτε αυτό έχει τέτοιο label** — άρα δεν είναι θέμα container labels. Πιθανότερη αιτία: το `<Icon/>` στο `my-ATHENA.xml` είναι **κενό** (τα επίσημα templates έχουν πάντα εικόνα), οπότε το Unraid μπορεί να δείχνει generic/άγνωστο badge. Ή μπορεί να είναι απλά το αναμενόμενο badge για custom GHCR image που δεν είναι στο Community Applications feed (κάτι αναπόφευκτο για ιδιωτικό image, ανεξάρτητα από το πώς φτιάχτηκε ο container). **Χρειάζεται επιβεβαίωση από τον Tommy τι ακριβώς δείχνει η οθόνη** πριν προχωρήσουμε σε μόνιμη διόρθωση.
+**Root cause επιβεβαιωμένο** (μέσω σύγκρισης με EmbyServer/HOME-Omada — τα δύο containers που πράγματι εγκατέστησε ο Tommy μέσω Unraid· το HomeAssistant αποδείχτηκε ΕΠΙΣΗΣ χειροκίνητο, άρα δεν ήταν έγκυρο reference point): στα πραγματικά Unraid-managed containers υπάρχουν πάντα 3 labels που λείπουν εντελώς από το ATHENA:
+
+```
+net.unraid.docker.managed = dockerman
+net.unraid.docker.icon    = <url εικόνας>
+net.unraid.docker.webui   = <url web UI>
+```
+
+Αυτά είναι απλά Docker labels — μπαίνουν με `--label` στο `docker run`, δεν χρειάζεται να περάσει κανείς από το Unraid GUI για να τα βάλει.
 
 ## Live config (backup, 2026-08-07)
 
@@ -44,6 +52,6 @@
 
 `my-JARVIS.xml`, `my-HomeSetup.xml`, `my-Home.xml`, `my-NeaSmirni.xml` — κανένα δεν αντιστοιχεί σε τρέχοντα container (μόνο 6 containers τρέχουν συνολικά: HOME/Omada, duckdns-updater, ATHENA, HomeAssistant, NginxProxyManager, EmbyServer). Πιθανόν κατάλοιπα πειραματισμού από προηγούμενα sessions· ασφαλή για διαγραφή αλλά δεν πειράχτηκαν.
 
-## Επόμενο βήμα
+## Λύση
 
-Εκκρεμεί επιβεβαίωση από τον Tommy τι ακριβώς δείχνει το Unraid Docker tab σαν "third party" πριν αποφασιστεί η ακριβής διόρθωση (icon στο template; κάτι άλλο;). Μόλις ξεκαθαριστεί, recreate μέσω σωστού μονοπατιού διατηρώντας ακριβώς τα production env vars/volumes/ports παραπάνω — αυτό λύνει ταυτόχρονα και το ξεπερασμένο image (task #4).
+`docker rm` + `docker run` recreate μέσω SSH, διατηρώντας ακριβώς τα production ports/volumes/env vars παραπάνω, **plus** τα 3 `net.unraid.docker.*` labels. Ένα βήμα, λύνει και τα δύο: γίνεται σωστά Unraid-managed ΚΑΙ πιάνει το τελευταίο image (task #4). Icon: `https://raw.githubusercontent.com/tommydee1978gr/Athena-/main/ui/avatar-mark.jpg` (δημόσιο repo, ήδη υπάρχον asset).

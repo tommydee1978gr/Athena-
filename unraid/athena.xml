@@ -13,7 +13,7 @@
   <Category>Tools: Other: Status:Beta</Category>
   <WebUI>http://[IP]:[PORT:8000]/</WebUI>
   <TemplateURL/>
-  <Icon/>
+  <Icon>https://raw.githubusercontent.com/tommydee1978gr/Athena-/main/ui/avatar-mark.jpg</Icon>
   <ExtraParams>--restart=unless-stopped</ExtraParams>
   <PostArgs/>
   <CPUset/>
