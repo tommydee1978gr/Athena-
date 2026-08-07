@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from typing import Any
 
 import httpx
 
+from .config import MEDIA_DIR
 from .db import connect, utcnow
-from .cliproxy import CLIProxyError, automatic_route, chat_completions, model_family
+from .cliproxy import CLIProxyError, automatic_route, chat_completions, generate_image, model_family
 from .integrations import (
     asterisk_originate,
     calendar_list,
@@ -150,6 +152,15 @@ def available_tools(user) -> list[dict[str, Any]]:
                     "notes": {"type": "string"},
                 },
                 ["project_id", "platform", "prompt_text"],
+            ),
+            _tool(
+                "generate_image",
+                "Generate an image (e.g. a character sheet, cover art, or reference image) from a text prompt. "
+                "Runs through ATHENA's own brain infrastructure (GPT Image, via the existing ChatGPT connection) — "
+                "no separate account or cost. Saves the result to this user's private media library and returns "
+                "its media_id.",
+                {"prompt": {"type": "string"}, "size": {"type": "string", "enum": ["1024x1024", "1024x1536", "1536x1024"]}},
+                ["prompt"],
             ),
         ]
     if is_allowed(user, "creative.read"):
@@ -307,6 +318,37 @@ async def execute_tool(user, name: str, args: dict[str, Any]) -> Any:
             )
         except (ValueError, PermissionError) as exc:
             return {"status": "error", "error": str(exc)}
+    if name == "generate_image" and is_allowed(user, "creative.write"):
+        prompt = str(args.get("prompt", "")).strip()
+        if not prompt:
+            return {"status": "error", "error": "prompt is required"}
+        size = args.get("size") or "1024x1024"
+        if size not in {"1024x1024", "1024x1536", "1536x1024"}:
+            size = "1024x1024"
+        try:
+            response = await generate_image(prompt, size=size)
+        except CLIProxyError as exc:
+            return {"status": "error", "error": exc.message}
+        if response.status_code != 200:
+            return {"status": "error", "error": f"image generation failed ({response.status_code}): {response.text[:300]}"}
+        try:
+            item = response.json()["data"][0]
+            image_bytes = base64.b64decode(item["b64_json"]) if "b64_json" in item else None
+        except (KeyError, IndexError, ValueError):
+            return {"status": "error", "error": "unexpected response shape from image generation"}
+        if image_bytes is None:
+            return {"status": "error", "error": "image generation returned a URL instead of image data — not saved"}
+        media_id = str(uuid.uuid4())
+        user_dir = MEDIA_DIR / "users" / user["id"]
+        user_dir.mkdir(parents=True, exist_ok=True)
+        target = user_dir / f"{media_id}.png"
+        target.write_bytes(image_bytes)
+        with connect() as conn:
+            conn.execute(
+                "INSERT INTO media_files(id,owner_id,original_name,relative_path,media_type,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)",
+                (media_id, user["id"], f"{prompt[:60]}.png", target.relative_to(MEDIA_DIR).as_posix(), "image/png", len(image_bytes), utcnow()),
+            )
+        return {"status": "ready", "media_id": media_id, "prompt": prompt, "size": size}
     if name == "creative_project_list" and is_allowed(user, "creative.read"):
         return list_projects(user["id"], args.get("status", "all"))
     if name == "project_files_search" and is_allowed(user, "creative.read"):

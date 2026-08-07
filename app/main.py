@@ -1307,6 +1307,18 @@ async def family_page(request: Request, user=Depends(current_user)):
     return layout("Οικογένεια", body, user, user["csrf_token"])
 
 
+async def _notify_task_assignment(creator: dict, assigned_to: str | None, title: str) -> None:
+    """A task assigned to someone other than its creator should reach them —
+    otherwise "my daughter left me a note" only ever shows up if that person
+    happens to open /family themselves."""
+    if not assigned_to or assigned_to == creator["id"]:
+        return
+    try:
+        await send_notification(assigned_to, "Νέα εργασία", f"{creator['display_name']}: {title}")
+    except Exception:
+        logging.getLogger("athena.notify").exception("family task assignment notification failed")
+
+
 @app.post("/family/tasks")
 async def family_task_form(request: Request, title: str = Form(...), notes: str = Form(""), assigned_to: str = Form(""), due_at: str = Form(""), csrf: str = Form(...), user=Depends(current_user)):
     verify_csrf(request, user, csrf)
@@ -1317,6 +1329,7 @@ async def family_task_form(request: Request, title: str = Form(...), notes: str 
         if assigned_to and not conn.execute("SELECT 1 FROM users WHERE id=? AND active=1", (assigned_to,)).fetchone():
             raise HTTPException(400, "Assigned family member does not exist or is inactive")
         conn.execute("INSERT INTO family_tasks(id,created_by,assigned_to,title,notes,due_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (task_id, user["id"], assigned_to or None, title, notes, due_at or None, now, now))
+    await _notify_task_assignment(user, assigned_to or None, title)
     audit(user["id"], "family_task_created", {"task_id": task_id, "assigned_to": assigned_to or None}, client_ip(request))
     return RedirectResponse("/family", 303)
 
@@ -1349,6 +1362,7 @@ async def api_family_task_create(payload: FamilyTaskRequest, request: Request, u
         if payload.assigned_to and not conn.execute("SELECT 1 FROM users WHERE id=? AND active=1", (payload.assigned_to,)).fetchone():
             raise HTTPException(400, "Assigned family member does not exist or is inactive")
         conn.execute("INSERT INTO family_tasks(id,created_by,assigned_to,title,notes,due_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (task_id, user["id"], payload.assigned_to, payload.title, payload.notes, payload.due_at, now, now))
+    await _notify_task_assignment(user, payload.assigned_to, payload.title)
     audit(user["id"], "family_task_created", {"task_id": task_id}, client_ip(request))
     return {"id": task_id, "status": "open"}
 

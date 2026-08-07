@@ -324,3 +324,20 @@ async def chat_completions(payload: dict[str, Any], timeout: float = 180.0) -> h
             )
     except httpx.RequestError as exc:
         raise CLIProxyError("provider_unavailable", str(exc)) from exc
+
+
+async def generate_image(prompt: str, size: str = "1024x1024", timeout: float = 120.0) -> httpx.Response:
+    """POST /v1/images/generations on the embedded CLIProxyAPI. Backed by the
+    Codex/ChatGPT OAuth connection (GPT Image) — no separate API key, uses
+    whatever "GPT Image 2 Base Model" is configured server-side in CLIProxyAPI
+    when no model is given, so we deliberately omit the "model" field rather
+    than guess an exact image-model id."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await client.post(
+                f"{CLIPROXY_INTERNAL_BASE_URL}/v1/images/generations",
+                headers=api_headers(),
+                json={"prompt": prompt, "n": 1, "size": size},
+            )
+    except httpx.RequestError as exc:
+        raise CLIProxyError("provider_unavailable", str(exc)) from exc
