@@ -997,16 +997,21 @@ async def _omada_token() -> tuple[str, str, str]:
 
 
 async def _omada_site_id(client: httpx.AsyncClient, base_url: str, omadac_id: str, headers: dict[str, str]) -> str:
-    cfg = get_app_config("omada") or {}
-    if cfg.get("site_id"):
-        return cfg["site_id"]
+    """Cached in-memory alongside the access token (same cache entry, same
+    lifetime) — NOT persisted via set_app_config, which requires a real user_id
+    for its configured_by foreign key and none is available this deep in the
+    call chain. A resolved site_id is a runtime fact, not a user setting."""
+    cached = _omada_token_cache.get(base_url)
+    if cached and cached.get("site_id"):
+        return cached["site_id"]
     response = await client.get(f"{base_url}/openapi/v1/{omadac_id}/sites", headers=headers, params={"pageSize": 10, "page": 1})
     payload = response.json()
     sites = ((payload.get("result") or {}).get("data")) or []
     if not sites:
         raise IntegrationError("not_configured", "No sites found on this Omada Controller")
     site_id = sites[0]["siteId"]
-    set_app_config("omada", {**cfg, "site_id": site_id}, cfg.get("configured_by", "system"))
+    if cached:
+        cached["site_id"] = site_id
     return site_id
 
 
