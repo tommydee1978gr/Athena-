@@ -1030,6 +1030,29 @@ async def omada_request(method: str, path: str, **kwargs) -> Any:
         raise IntegrationError("provider_unavailable", str(exc)) from exc
 
 
+async def unraid_graphql(query: str, variables: dict[str, Any] | None = None) -> Any:
+    """The Unraid API's GraphQL endpoint. Verified live 2026-08-07: reachable at
+    plain http://<host>/graphql (port 80) with an `x-api-key` header — port 443
+    on the host is bound to 127.0.0.1 only and unreachable from ATHENA's own
+    (bridge-network) container, so http/80 is the only path that actually works
+    here, not the https/443 one you'd expect from the docs."""
+    cfg = get_app_config("unraid")
+    if not cfg or not cfg.get("base_url") or not cfg.get("api_key"):
+        raise IntegrationError("not_configured", "The Unraid server itself is not configured", http_status=409)
+    url = f"{cfg['base_url'].rstrip('/')}/graphql"
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(url, headers={"x-api-key": cfg["api_key"], "Content-Type": "application/json"}, json={"query": query, "variables": variables or {}})
+        if response.status_code >= 400:
+            raise IntegrationError("permission_denied" if response.status_code in (401, 403) else "error", f"Unraid API returned HTTP {response.status_code}", details=_safe_response(response))
+        payload = response.json()
+        if payload.get("errors"):
+            raise IntegrationError("error", "Unraid API returned an error", details=payload["errors"])
+        return payload.get("data")
+    except httpx.RequestError as exc:
+        raise IntegrationError("provider_unavailable", str(exc)) from exc
+
+
 def _ami_packet(fields: dict[str, Any]) -> bytes:
     safe_lines = []
     for key, value in fields.items():

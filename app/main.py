@@ -580,6 +580,7 @@ async def integrations_page(request: Request, user=Depends(current_user)):
         emby = get_app_config("emby") or {}
         asterisk = get_app_config("asterisk") or {}
         omada = get_app_config("omada") or {}
+        unraid = get_app_config("unraid") or {}
         voice_cfg = get_system_setting("voice", {}) or {}
         public = get_system_setting("public_base_url", "") or ""
         secret_note = "<small>Άφησε κενό ένα secret για να διατηρηθεί η ήδη αποθηκευμένη τιμή.</small>"
@@ -594,6 +595,7 @@ async def integrations_page(request: Request, user=Depends(current_user)):
         <h3>Emby</h3><label>Base URL<input name='emby_base_url' value='{esc(emby.get('base_url',''))}'></label><label>API key<input name='emby_api_key' type='password'></label><label>User ID<input name='emby_user_id' value='{esc(emby.get('user_id',''))}'></label>{secret_note}
         <h3>Asterisk AMI</h3><label>Host<input name='asterisk_host' value='{esc(asterisk.get('host',''))}'></label><label>Port<input name='asterisk_port' value='{esc(asterisk.get('port',5038))}'></label><label>Username<input name='asterisk_username' value='{esc(asterisk.get('username',''))}'></label><label>Secret<input name='asterisk_secret' type='password'></label><label>Context<input name='asterisk_context' value='{esc(asterisk.get('context','from-internal'))}'></label><label class='inline'><input type='checkbox' name='asterisk_tls' value='true' {'checked' if asterisk.get('tls') else ''}>TLS</label>{secret_note}
         <h3>Omada Controller (δίκτυο σπιτιού — μόνο admin)</h3><p><small>Settings → Platform Integration στο ίδιο το Omada Controller για να φτιάξεις Application και να πάρεις Client ID/Secret.</small></p><label>Base URL<input name='omada_base_url' value='{esc(omada.get('base_url',''))}' placeholder='https://192.168.1.2:18043'></label><label>Client ID<input name='omada_client_id' value='{esc(omada.get('client_id',''))}'></label><label>Client secret<input name='omada_client_secret' type='password'></label>{secret_note}
+        <h3>Unraid server (ο ίδιος ο server — μόνο admin)</h3><p><small><code>unraid-api apikey --name ATHENA --create --roles VIEWER</code> στο ίδιο το Unraid (SSH) για να πάρεις το key. Σημείωση: το port 443 δείχνει μόνο localhost — βάλε plain http στο port 80.</small></p><label>Base URL<input name='unraid_base_url' value='{esc(unraid.get('base_url',''))}' placeholder='http://192.168.1.2'></label><label>API key<input name='unraid_api_key' type='password'></label>{secret_note}
         <h3>ElevenLabs (voice — preferred over local Whisper/Piper when set)</h3><p><small>Free tier is enough to try it. Χρησιμοποιείται αυτόματα για STT/TTS όποτε υπάρχει API key εδώ· χωρίς αυτό πέφτει στο τοπικό Whisper/Piper. Για ελληνική φωνή, βρες ελληνικό voice στο <a href='https://elevenlabs.io/app/voice-library' target='_blank' rel='noopener'>Voice Library</a> του ElevenLabs και βάλε το Voice ID του εδώ.</small></p><label>API key<input name='elevenlabs_api_key' type='password'></label><label>Default voice ID (ελληνικό, από το Voice Library)<input name='elevenlabs_default_voice_id' value='{esc(elevenlabs.get("default_voice_id",""))}' placeholder='π.χ. π78ab...'></label><label>Model ID<input name='elevenlabs_model_id' value='{esc(elevenlabs.get("model_id","eleven_v3"))}'></label>
         <label>Stability (0–1, χαμηλότερο = πιο εκφραστικό αλλά λιγότερο σταθερό)<input name='elevenlabs_stability' value='{esc(elevenlabs.get("stability",0.45))}'></label>
         <label>Similarity boost (0–1)<input name='elevenlabs_similarity_boost' value='{esc(elevenlabs.get("similarity_boost",0.8))}'></label>
@@ -626,6 +628,7 @@ async def integrations_config(request: Request, csrf: str = Form(...), user=Depe
         "emby": {"base_url": form.get("emby_base_url"), "api_key": form.get("emby_api_key"), "user_id": form.get("emby_user_id")},
         "asterisk": {"host": form.get("asterisk_host"), "port": int(form.get("asterisk_port") or 5038), "username": form.get("asterisk_username"), "secret": form.get("asterisk_secret"), "context": form.get("asterisk_context") or "from-internal", "tls": form.get("asterisk_tls") == "true"},
         "omada": {"base_url": form.get("omada_base_url"), "client_id": form.get("omada_client_id"), "client_secret": form.get("omada_client_secret")},
+        "unraid": {"base_url": form.get("unraid_base_url"), "api_key": form.get("unraid_api_key")},
     }
     for provider, values in mapping.items():
         previous = get_app_config(provider) or {}

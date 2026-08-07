@@ -18,6 +18,7 @@ from .integrations import (
     instagram_profile,
     omada_request,
     spotify_current,
+    unraid_graphql,
     tasks_list,
     youtube_channel,
 )
@@ -124,6 +125,8 @@ def available_tools(user) -> list[dict[str, Any]]:
             _tool("network_clients", "List devices currently connected to the home network (Omada Controller) — MAC, name, IP, wired/wireless, online status. Never changes anything.", {}),
             _tool("network_devices", "List the network infrastructure itself (access points, switches, gateway) with status. Never changes anything.", {}),
         ]
+    if is_allowed(user, "infra.read"):
+        tools.append(_tool("server_status", "Read the Unraid home server's own status — array state, storage capacity (free/used/total), and running Docker containers. Never changes anything.", {}))
     if is_allowed(user, "creative.write"):
         tools += [
             _tool(
@@ -316,6 +319,13 @@ async def execute_tool(user, name: str, args: dict[str, Any]) -> Any:
         if isinstance(items, list):
             return [{"mac": d.get("mac"), "name": d.get("name"), "type": d.get("type"), "status": d.get("status"), "ip": d.get("ip")} for d in items]
         return items
+    if name == "server_status" and is_allowed(user, "infra.read"):
+        data = await unraid_graphql(
+            "{ info { os { platform distro release } } "
+            "array { state capacity { kilobytes { free used total } } } "
+            "docker { containers { names state status } } }"
+        )
+        return data
     if name == "craft_prompt" and is_allowed(user, "creative.write"):
         platform = str(args.get("platform", ""))
         if platform not in PLATFORM_NOTES:
