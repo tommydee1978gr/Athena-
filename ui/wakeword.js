@@ -1,96 +1,157 @@
-/* On-device wake word ("Jarvis") via Picovoice Porcupine — runs entirely in the
- * browser via WASM. No audio leaves the machine while just listening for the wake
- * word; only after "Jarvis" fires does the existing precise-capture flow (app.js's
- * startListening, which does send audio to ATHENA's own STT) take over.
+/* Always-on Greek wake word ("Αθηνά") for the /graph page.
  *
- * Silently does nothing if no AccessKey is configured (window.ATHENA_PICOVOICE_KEY
- * empty) or the browser/engine can't init — this must never break the rest of the
- * /graph page.
+ * Reuses ATHENA's own satellite protocol (app/satellite.py, over
+ * /ws/voice/satellite) — the same code path a physical ESP32/Raspberry Pi
+ * satellite would use, just authenticated with this browser tab's session
+ * cookie instead of a device token. Detection runs server-side with the
+ * local faster-whisper model already bundled with ATHENA: free, on-device
+ * (same LAN, no third-party cloud), and correctly understands Greek —
+ * unlike Picovoice Porcupine, which was tried first but only ships
+ * built-in keywords for English/French/German/Italian/Japanese/Korean/
+ * Mandarin/Portuguese/Spanish, never Greek.
+ *
+ * Starts listening automatically on page load — no button press required.
+ * The 👂 icon is a status indicator; clicking it only mutes/unmutes.
+ *
+ * Trade-off vs. the old in-browser approach: audio is streamed continuously
+ * to ATHENA's own server (same home network) instead of staying entirely
+ * inside the browser. Silently does nothing if getUserMedia or WebSocket
+ * are unavailable — this must never break the rest of the /graph page.
  */
 (function () {
-  const accessKey = window.ATHENA_PICOVOICE_KEY;
   const toggle = document.getElementById("wakeToggle");
   if (!toggle) return;
-
-  if (!accessKey) {
+  if (!navigator.mediaDevices || !window.WebSocket) {
     toggle.disabled = true;
-    toggle.title = 'Ρύθμισε ένα Picovoice AccessKey στο /integrations για να ενεργοποιηθεί η αφύπνιση με "Jarvis"';
     toggle.style.opacity = "0.4";
     return;
   }
 
-  const STORAGE_KEY = "athena_wakeword_armed";
-  let porcupine = null;
-  let armed = false; // user's saved preference — "should we be listening whenever idle"
-  let subscribed = false; // are we actually attached to the mic right now
+  const STORAGE_KEY = "athena_wakeword_muted";
+  const TARGET_SAMPLE_RATE = 16000;
+  const FRAME_MS = 200;
+
+  let muted = localStorage.getItem(STORAGE_KEY) === "1";
   let athenaBusy = false;
+  let socket = null;
+  let audioCtx = null;
+  let mediaStream = null;
+  let workletNode = null;
+  let connecting = false;
 
-  function setToggleVisual() {
-    toggle.classList.toggle("recording", subscribed);
-    toggle.title = armed ? 'Ακούω για "Jarvis" — πάτα για απενεργοποίηση' : 'Πάτα για συνεχή ακρόαση ("Jarvis")';
+  function setToggleVisual(state) {
+    toggle.classList.toggle("recording", state === "listening" || state === "capturing");
+    toggle.title = muted
+      ? 'Σιγασμένο — πάτα για να ακούει ξανά "Αθηνά"'
+      : 'Ακούει για "Αθηνά" — πάτα για σίγαση';
   }
 
-  async function ensurePorcupine() {
-    if (porcupine) return porcupine;
-    porcupine = await PorcupineWeb.PorcupineWorker.create(
-      accessKey,
-      PorcupineWeb.BuiltInKeyword.Jarvis,
-      () => {
-        // Wake word heard — stop passively listening and hand off to the real capture.
-        unsubscribe().finally(() => {
+  // Downmixes/downsamples Float32 chunks from the mic's native rate to
+  // 16kHz mono 16-bit PCM, matching what run_satellite_session expects.
+  function floatTo16kPCM(float32, inputRate) {
+    const ratio = inputRate / TARGET_SAMPLE_RATE;
+    const outLength = Math.floor(float32.length / ratio);
+    const pcm = new Int16Array(outLength);
+    for (let i = 0; i < outLength; i++) {
+      const sample = float32[Math.floor(i * ratio)];
+      const clamped = Math.max(-1, Math.min(1, sample));
+      pcm[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+    }
+    return pcm;
+  }
+
+  async function connect() {
+    if (socket || connecting || muted || athenaBusy) return;
+    connecting = true;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(mediaStream);
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+      workletNode = processor;
+
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(`${proto}//${location.host}/ws/voice/satellite`);
+      socket.binaryType = "arraybuffer";
+
+      let frameBuffer = new Int16Array(0);
+      const samplesPerFrame = (TARGET_SAMPLE_RATE * FRAME_MS) / 1000;
+
+      processor.onaudioprocess = (event) => {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        const pcm = floatTo16kPCM(event.inputBuffer.getChannelData(0), audioCtx.sampleRate);
+        const merged = new Int16Array(frameBuffer.length + pcm.length);
+        merged.set(frameBuffer);
+        merged.set(pcm, frameBuffer.length);
+        frameBuffer = merged;
+        while (frameBuffer.length >= samplesPerFrame) {
+          socket.send(frameBuffer.slice(0, samplesPerFrame).buffer);
+          frameBuffer = frameBuffer.slice(samplesPerFrame);
+        }
+      };
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
+
+      socket.onmessage = (event) => {
+        if (typeof event.data !== "string") return; // audio replies are handled by app.js's own TTS path
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch (err) {
+          return;
+        }
+        if (payload.event === "wake_detected") {
+          // Hand off to the exact same precise-capture flow the mic button
+          // uses (MediaRecorder + STT + ask + TTS, with local Piper
+          // fallback) — the satellite socket's own command capture is
+          // abandoned by disconnecting below, so the server sees silence
+          // and drops it harmlessly.
+          setToggleVisual("listening");
+          disconnect();
           if (window.ATHENA_startListening) window.ATHENA_startListening();
-        });
-      }
-    );
-    return porcupine;
-  }
-
-  async function subscribe() {
-    if (subscribed || athenaBusy || !armed) return;
-    try {
-      const engine = await ensurePorcupine();
-      await WebVoiceProcessor.WebVoiceProcessor.subscribe(engine);
-      subscribed = true;
-      setToggleVisual();
+        }
+      };
+      socket.onerror = () => disconnect();
+      socket.onclose = () => {
+        socket = null;
+        if (!muted && !athenaBusy) setTimeout(connect, 1500); // reconnect after a drop
+      };
+      setToggleVisual("idle");
     } catch (err) {
-      // Mic permission denied, no HTTPS, unsupported browser, bad key, etc. — degrade
-      // silently to push-to-talk rather than throwing inside a global script.
+      // Mic permission denied, no HTTPS on a non-localhost origin, unsupported
+      // browser, etc. — degrade silently to push-to-talk only.
       console.warn("Wake word unavailable:", err);
-      armed = false;
-      localStorage.setItem(STORAGE_KEY, "0");
-      setToggleVisual();
+      disconnect();
+    } finally {
+      connecting = false;
     }
   }
 
-  async function unsubscribe() {
-    if (!subscribed) return;
-    subscribed = false;
-    setToggleVisual();
-    try {
-      await WebVoiceProcessor.WebVoiceProcessor.unsubscribe(porcupine);
-    } catch (err) {
-      /* already torn down — fine */
-    }
+  function disconnect() {
+    if (workletNode) { try { workletNode.disconnect(); } catch (err) {} workletNode = null; }
+    if (audioCtx) { try { audioCtx.close(); } catch (err) {} audioCtx = null; }
+    if (mediaStream) { mediaStream.getTracks().forEach((t) => t.stop()); mediaStream = null; }
+    if (socket) { try { socket.close(); } catch (err) {} socket = null; }
+    setToggleVisual("idle");
   }
 
   toggle.addEventListener("click", () => {
-    armed = !armed;
-    localStorage.setItem(STORAGE_KEY, armed ? "1" : "0");
-    setToggleVisual();
-    if (armed) subscribe();
-    else unsubscribe();
+    muted = !muted;
+    localStorage.setItem(STORAGE_KEY, muted ? "1" : "0");
+    if (muted) disconnect();
+    else connect();
+    setToggleVisual("idle");
   });
 
   window.addEventListener("athena:busy", () => {
     athenaBusy = true;
-    unsubscribe();
+    disconnect();
   });
   window.addEventListener("athena:idle", () => {
     athenaBusy = false;
-    subscribe();
+    connect();
   });
 
-  armed = localStorage.getItem(STORAGE_KEY) === "1";
-  setToggleVisual();
-  if (armed) subscribe();
+  setToggleVisual("idle");
+  if (!muted) connect(); // on by default — no click needed to arm it
 })();

@@ -53,7 +53,7 @@
     reactor.className = state;
     reactorLabel.textContent = { idle: "idle", listening: "ακούω", thinking: "σκέφτομαι", speaking: "μιλάω" }[state] || state;
     // Single choke point for the wake-word listener (wakeword.js) to know when it's
-    // safe to listen for "Jarvis" again — never while ATHENA itself has the mic, is
+    // safe to listen for "Αθηνά" again — never while ATHENA itself has the mic, is
     // thinking, or is talking (talking back into its own wake-word ears would loop).
     window.dispatchEvent(new CustomEvent(state === "idle" ? "athena:idle" : "athena:busy"));
   }
@@ -317,7 +317,7 @@
   });
   refreshButton.addEventListener("click", loadGraph);
 
-  // wakeword.js calls this once it hears "Jarvis" — same precise-capture path the
+  // wakeword.js calls this once it hears "Αθηνά" — same precise-capture path the
   // mic button uses, so STT quality/silence-detection is identical either way.
   window.ATHENA_startListening = startListening;
 
