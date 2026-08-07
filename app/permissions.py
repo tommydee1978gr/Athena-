@@ -10,11 +10,14 @@ ALL_CAPABILITIES = {
     "homeassistant.read", "homeassistant.control",
     "emby.read", "emby.control", "voip.call", "distrokid.manage", "llm.use", "audit.read",
     "creative.read", "creative.write", "routines.manage", "notifications.manage", "mcp.use",
+    "network.read", "network.control",
 }
 
 ROLE_DEFAULTS = {
     "admin": ALL_CAPABILITIES,
-    "adult": ALL_CAPABILITIES - {"users.manage", "integrations.configure", "memory.system", "audit.read"},
+    # network.* (Omada Controller) is admin-only by Tommy's own request 2026-08-07 —
+    # home network management, not something every adult in the family should touch.
+    "adult": ALL_CAPABILITIES - {"users.manage", "integrations.configure", "memory.system", "audit.read", "network.read", "network.control"},
     "child": {
         "integrations.connect", "memory.private", "memory.family", "family.tasks.read", "family.tasks.write", "family.locations.read", "location.share",
         "voice.use", "voice.enroll", "calendar.read", "tasks.read", "tasks.write", "youtube.read", "spotify.read", "emby.read", "llm.use",

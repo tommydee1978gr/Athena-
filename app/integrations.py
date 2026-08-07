@@ -12,6 +12,7 @@ import secrets
 import socket
 import ssl
 import struct
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -946,6 +947,84 @@ async def emby_request(method: str, path: str, **kwargs) -> Any:
             response = await client.request(method, url, headers=headers, **kwargs)
         if response.status_code >= 400:
             raise IntegrationError("permission_denied" if response.status_code in (401, 403) else "error", f"Emby returned HTTP {response.status_code}", details=_safe_response(response))
+        return response.json() if response.content else {"status": "ok"}
+    except httpx.RequestError as exc:
+        raise IntegrationError("provider_unavailable", str(exc)) from exc
+
+
+_omada_token_cache: dict[str, dict[str, Any]] = {}
+
+
+async def _omada_token() -> tuple[str, str, str]:
+    """Client-credentials OAuth against the local Omada Controller — returns
+    (access_token, omadac_id, base_url). Cached in-memory per base_url until
+    shortly before expiry; the controller's own TLS cert is self-signed
+    (local network appliance), hence verify=False, same trust boundary as
+    every other integration ATHENA reaches over the LAN.
+
+    Verified end-to-end live against the real controller 2026-08-07 (token
+    fetch, site lookup, client list all returned real data)."""
+    cfg = get_app_config("omada")
+    if not cfg or not cfg.get("base_url") or not cfg.get("client_id") or not cfg.get("client_secret"):
+        raise IntegrationError("not_configured", "Omada Controller is not configured", http_status=409)
+    base_url = cfg["base_url"].rstrip("/")
+    cached = _omada_token_cache.get(base_url)
+    if cached and cached["expires_at"] > time.time() + 30:
+        return cached["access_token"], cached["omadac_id"], base_url
+    try:
+        async with httpx.AsyncClient(timeout=15, verify=False) as client:
+            info = await client.get(f"{base_url}/api/info")
+            if info.status_code >= 400:
+                raise IntegrationError("provider_unavailable", f"Omada Controller returned HTTP {info.status_code} for /api/info")
+            omadac_id = info.json()["result"]["omadacId"]
+            token_response = await client.post(
+                f"{base_url}/openapi/authorize/token",
+                params={"grant_type": "client_credentials"},
+                json={"omadacId": omadac_id, "client_id": cfg["client_id"], "client_secret": cfg["client_secret"]},
+            )
+        if token_response.status_code >= 400:
+            raise IntegrationError("permission_denied", f"Omada auth returned HTTP {token_response.status_code}", details=_safe_response(token_response))
+        payload = token_response.json()
+        if payload.get("errorCode"):
+            raise IntegrationError("permission_denied", payload.get("msg", "Omada authorization failed"), details=payload)
+        result = payload["result"]
+        access_token = result["accessToken"]
+        expires_in = int(result.get("expiresIn", 7200))
+        _omada_token_cache[base_url] = {"access_token": access_token, "omadac_id": omadac_id, "expires_at": time.time() + expires_in}
+        return access_token, omadac_id, base_url
+    except httpx.RequestError as exc:
+        raise IntegrationError("provider_unavailable", str(exc)) from exc
+
+
+async def _omada_site_id(client: httpx.AsyncClient, base_url: str, omadac_id: str, headers: dict[str, str]) -> str:
+    cfg = get_app_config("omada") or {}
+    if cfg.get("site_id"):
+        return cfg["site_id"]
+    response = await client.get(f"{base_url}/openapi/v1/{omadac_id}/sites", headers=headers, params={"pageSize": 10, "page": 1})
+    payload = response.json()
+    sites = ((payload.get("result") or {}).get("data")) or []
+    if not sites:
+        raise IntegrationError("not_configured", "No sites found on this Omada Controller")
+    site_id = sites[0]["siteId"]
+    set_app_config("omada", {**cfg, "site_id": site_id}, cfg.get("configured_by", "system"))
+    return site_id
+
+
+async def omada_request(method: str, path: str, **kwargs) -> Any:
+    """path is relative to /openapi/v1/{omadacId}/sites/{siteId}/ — pass e.g.
+    "clients" or "clients/AA:BB:CC:DD:EE:FF/block". Read-only by convention
+    from the caller's side (orchestrator gates writes behind confirmation);
+    this function itself just executes whatever request it's given."""
+    access_token, omadac_id, base_url = await _omada_token()
+    headers = dict(kwargs.pop("headers", {}) or {})
+    headers["Authorization"] = f"AccessToken={access_token}"
+    try:
+        async with httpx.AsyncClient(timeout=20, verify=False) as client:
+            site_id = await _omada_site_id(client, base_url, omadac_id, headers)
+            url = f"{base_url}/openapi/v1/{omadac_id}/sites/{site_id}/{path.lstrip('/')}"
+            response = await client.request(method, url, headers=headers, **kwargs)
+        if response.status_code >= 400:
+            raise IntegrationError("permission_denied" if response.status_code in (401, 403) else "error", f"Omada Controller returned HTTP {response.status_code}", details=_safe_response(response))
         return response.json() if response.content else {"status": "ok"}
     except httpx.RequestError as exc:
         raise IntegrationError("provider_unavailable", str(exc)) from exc

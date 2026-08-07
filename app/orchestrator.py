@@ -16,6 +16,7 @@ from .integrations import (
     homeassistant_request,
     instagram_media,
     instagram_profile,
+    omada_request,
     spotify_current,
     tasks_list,
     youtube_channel,
@@ -75,6 +76,7 @@ ACTION_CAPABILITIES = {
     "project_files.mkdir": "creative.write",
     "project_files.move": "creative.write",
     "project_files.save_media": "creative.write",
+    "network.client_action": "network.control",
 }
 
 # Emby and Asterisk are the two explicit exceptions Tommy asked for: ATHENA
@@ -117,6 +119,11 @@ def available_tools(user) -> list[dict[str, Any]]:
         tools.append(_tool("instagram_recent_media", "Read the current user's recent Instagram posts (Professional account required).", {}))
     if is_allowed(user, "homeassistant.read"):
         tools.append(_tool("homeassistant_states", "Read Home Assistant entity states. This tool never changes a device.", {"entity_id": {"type": ["string", "null"]}}))
+    if is_allowed(user, "network.read"):
+        tools += [
+            _tool("network_clients", "List devices currently connected to the home network (Omada Controller) — MAC, name, IP, wired/wireless, online status. Never changes anything.", {}),
+            _tool("network_devices", "List the network infrastructure itself (access points, switches, gateway) with status. Never changes anything.", {}),
+        ]
     if is_allowed(user, "creative.write"):
         tools += [
             _tool(
@@ -289,6 +296,26 @@ async def execute_tool(user, name: str, args: dict[str, Any]) -> Any:
     if name == "homeassistant_states" and is_allowed(user, "homeassistant.read"):
         entity_id = args.get("entity_id")
         return await homeassistant_request("GET", f"/api/states/{entity_id}" if entity_id else "/api/states")
+    if name == "network_clients" and is_allowed(user, "network.read"):
+        data = await omada_request("GET", "clients", params={"page": 1, "pageSize": 200})
+        items = ((data.get("result") or {}).get("data")) or []
+        return [
+            {
+                "mac": item.get("mac"),
+                "name": item.get("name") or item.get("hostName"),
+                "ip": item.get("ip"),
+                "device_type": item.get("deviceType"),
+                "wireless": item.get("wireless"),
+                "active": item.get("active"),
+            }
+            for item in items
+        ]
+    if name == "network_devices" and is_allowed(user, "network.read"):
+        data = await omada_request("GET", "devices")
+        items = data.get("result") or data
+        if isinstance(items, list):
+            return [{"mac": d.get("mac"), "name": d.get("name"), "type": d.get("type"), "status": d.get("status"), "ip": d.get("ip")} for d in items]
+        return items
     if name == "craft_prompt" and is_allowed(user, "creative.write"):
         platform = str(args.get("platform", ""))
         if platform not in PLATFORM_NOTES:
