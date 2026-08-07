@@ -639,7 +639,7 @@ def test_orchestrator_automatically_falls_back_to_another_brain_family(monkeypat
 
 
 def test_ask_api_rejects_manual_model_selection(monkeypatch) -> None:
-    async def fake_ask(user, question, on_delta=None):
+    async def fake_ask(user, question, on_delta=None, voice=False):
         return {"status": "ready", "answer": question, "brain": {"selection": "athena_automatic"}}
     monkeypatch.setattr("app.main.ask", fake_ask)
     with TestClient(app) as client:

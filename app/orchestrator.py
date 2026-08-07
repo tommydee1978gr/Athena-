@@ -515,12 +515,20 @@ async def _stream_chat_with_failover(base_payload: dict[str, Any], model_order: 
     )
 
 
-async def ask(user, question: str, on_delta=None) -> dict[str, Any]:
+async def ask(user, question: str, on_delta=None, voice: bool = False) -> dict[str, Any]:
     """on_delta, if given, is an async callback invoked with each text chunk as
     it's generated. A tool-calling round normally emits only tool_calls with no
     content, so in practice this only fires real text during the round that
     produces the final answer — but any commentary text a model streams
-    alongside a tool call is forwarded too rather than held back and guessed at."""
+    alongside a tool call is forwarded too rather than held back and guessed at.
+
+    voice=True marks a question that arrived as actual speech (mic button or
+    satellite wake word) rather than typed text — every answer gets read
+    aloud via TTS regardless, but a spoken back-and-forth is far more
+    latency-sensitive than a typed one, and TTS synthesis time scales with
+    answer length (measured live: ~30ms/char), so voice turns ask for a
+    short spoken-style answer instead of the fuller write-up a typed
+    question may warrant."""
     try:
         route = await automatic_route(question)
     except CLIProxyError as exc:
@@ -569,6 +577,12 @@ async def ask(user, question: str, on_delta=None) -> dict[str, Any]:
         "Ο έλεγχος του Emby (emby_control) και η κλήση μέσω Asterisk (voip_originate_call) ΔΕΝ χρειάζονται επιβεβαίωση — εκτελούνται αμέσως όταν τα καλέσεις, οπότε κάλεσέ τα μόνο όταν είσαι σίγουρη τι ζητήθηκε. "
         f"Τρέχων χρήστης: {user['display_name']} ({user['role']}). "
         f"Σχετικές μνήμες: {json.dumps(memories, ensure_ascii=False)[:6000]}"
+        + (
+            " Αυτή η ερώτηση ήρθε φωνητικά (mic/wake word) — απάντησε σε 1 έως 3 σύντομες προτάσεις, μόνο ό,τι χρειάζεται για μια ζωντανή συζήτηση, "
+            "χωρίς μεγάλες αναλύσεις ή λίστες, εκτός αν ρητά ζητηθεί περισσότερη λεπτομέρεια. Η εκφώνηση της απάντησης καθυστερεί ανάλογα με το μήκος της, "
+            "οπότε μια μεγάλη απάντηση εδώ σημαίνει πολλή αναμονή για τον χρήστη."
+            if voice else ""
+        )
     )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},

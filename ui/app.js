@@ -128,14 +128,14 @@
   // /api/ask streams newline-delimited JSON ({"event":"delta","text":...} then
   // one final {"event":"done","result":{...}}) so text appears as it's
   // generated instead of only once the whole answer is ready.
-  async function ask(question) {
+  async function ask(question, voice = false) {
     if (!question.trim()) return;
     setReactor("thinking");
     answerCard.classList.remove("visible");
     let streamed = "";
     let shownFirstDelta = false;
     try {
-      const response = await api("/api/ask", { method: "POST", body: JSON.stringify({ question }) });
+      const response = await api("/api/ask", { method: "POST", body: JSON.stringify({ question, voice }) });
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -261,13 +261,14 @@
     if (blob.size < 500) { setReactor("idle"); return; } // essentially silence, nothing to send
     const fd = new FormData();
     fd.append("audio", blob, "turn.webm");
+    fd.append("language", "el"); // was unset — Whisper fell back to auto-detect on a short clip and often guessed wrong, garbling what it heard
     try {
       const sttResponse = await api("/api/voice/stt", { method: "POST", body: fd });
       const stt = await sttResponse.json();
       const heard = (stt.text || "").trim();
       if (!heard) { setReactor("idle"); return; }
       askInput.value = "";
-      await ask(heard);
+      await ask(heard, true);
     } catch (err) {
       showAnswer("Δεν έγινε η μεταγραφή: " + err.message);
       setReactor("idle");

@@ -824,6 +824,7 @@ async def create_confirmation(payload: ConfirmationRequest, request: Request, us
 class AskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     question: str = Field(min_length=1, max_length=12000)
+    voice: bool = False
 
 
 @app.post("/api/ask")
@@ -841,7 +842,7 @@ async def api_ask(payload: AskRequest, request: Request, user=Depends(current_us
 
     async def run_ask() -> dict[str, Any]:
         try:
-            result = await ask(user, payload.question, on_delta=on_delta)
+            result = await ask(user, payload.question, on_delta=on_delta, voice=payload.voice)
         except Exception as exc:
             logging.getLogger("athena.ask").exception("ask() failed outside its own error handling")
             result = {"status": "error", "answer": str(exc)}
@@ -1895,7 +1896,7 @@ async def api_satellite_tokens_revoke(token_id: str, request: Request, user=Depe
 
 
 @app.websocket("/ws/voice/satellite")
-async def ws_voice_satellite(websocket: WebSocket, token: str = "", wake_phrase: str = "Αθηνά"):
+async def ws_voice_satellite(websocket: WebSocket, token: str = "", wake_phrase: str = ""):
     row = resolve_satellite_token(token) if token else get_session(websocket.cookies.get(SESSION_COOKIE))
     if not row:
         await websocket.close(code=4401)
@@ -1904,7 +1905,18 @@ async def ws_voice_satellite(websocket: WebSocket, token: str = "", wake_phrase:
     if not is_allowed(user, "voice.use"):
         await websocket.close(code=4403)
         return
-    await run_satellite_session(websocket, user, wake_phrase)
+    # The admin-configured wake phrase/model/language (Integrations → Local
+    # voice runtime) used to be entirely ignored here — the satellite always
+    # ran with hardcoded defaults regardless of what was saved. A caller can
+    # still override wake_phrase via query param (e.g. a physical satellite
+    # pinned to a specific phrase); the browser client never does, so it now
+    # actually gets what's configured.
+    cfg = get_system_setting("voice", {}) or {}
+    await run_satellite_session(
+        websocket, user, wake_phrase or cfg.get("wake_phrase", "Αθηνά"),
+        language=cfg.get("wake_language", "el"), wake_model=cfg.get("wake_model", "tiny"),
+        command_model=cfg.get("stt_model", "small"),
+    )
 
 
 def probe_audio(path: Path) -> dict[str, Any]:
