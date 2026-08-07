@@ -87,7 +87,7 @@ from .notify import add_channel as add_notify_channel, list_channels as list_not
 from .orchestrator import ACTION_CAPABILITIES, ask
 from .permissions import ALL_CAPABILITIES, is_allowed, permission_snapshot, set_permission
 from .learning import run_daily_reflection
-from .mcp_client import add_server as add_mcp_server, call_cached_tool, list_servers as list_mcp_servers, refresh_tool_cache, remove_server as remove_mcp_server, set_enabled as set_mcp_server_enabled
+from .mcp_client import add_server as add_mcp_server, call_cached_tool, finish_oauth_flow as finish_mcp_oauth, list_servers as list_mcp_servers, refresh_tool_cache, remove_server as remove_mcp_server, set_enabled as set_mcp_server_enabled, start_oauth_flow as start_mcp_oauth
 from .project_files import list_files as list_project_files, make_directory as make_project_directory, mounted as project_files_mounted, move_path as move_project_path, read_text_file as read_project_file, save_media_as_project_file, write_text_file as write_project_text_file
 from .routines import create_routine, delete_routine as delete_routine_row, get_routine, list_routines, set_enabled as set_routine_enabled
 from .scheduler import schedule_routine, start_scheduler, stop_scheduler, unschedule_routine
@@ -2359,6 +2359,13 @@ class MCPServerRequest(BaseModel):
     requires_confirmation: bool = True
 
 
+_MCP_OAUTH_STATUS_LABELS = {
+    "connected": "<span class='status ready'>🔐 συνδεδεμένο</span>",
+    "registered": "<span class='status not_configured'>🔐 εκκρεμεί σύνδεση</span>",
+    "not_applicable": "<span class='muted'>—</span>",
+}
+
+
 @app.get("/mcp", response_class=HTMLResponse)
 async def mcp_page(request: Request, user=Depends(require_admin)):
     servers = list_mcp_servers()
@@ -2366,19 +2373,22 @@ async def mcp_page(request: Request, user=Depends(require_admin)):
         f"<tr><td>{esc(s['name'])}</td><td>{esc(s['transport'])}</td>"
         f"<td>{'✅' if s['requires_confirmation'] else '⚠️ αυτόνομο'}</td>"
         f"<td><span class='status {'ready' if s['enabled'] else 'not_configured'}'>{'ενεργό' if s['enabled'] else 'ανενεργό'}</span></td>"
-        f"<td><form method='post' action='/mcp/{esc(s['id'])}/delete' style='display:inline'><input type='hidden' name='csrf' value='{esc(user['csrf_token'])}'><button class='danger'>Αφαίρεση</button></form></td></tr>"
+        f"<td>{_MCP_OAUTH_STATUS_LABELS.get(s['oauth_status'], '—')}</td>"
+        f"<td>"
+        + (f"<a class='button secondary' href='/mcp/{esc(s['id'])}/oauth/start'>{'Επανασύνδεση' if s['oauth_status'] == 'connected' else 'Σύνδεση OAuth'}</a> " if s['transport'] == 'http' else "")
+        + f"<form method='post' action='/mcp/{esc(s['id'])}/delete' style='display:inline'><input type='hidden' name='csrf' value='{esc(user['csrf_token'])}'><button class='danger'>Αφαίρεση</button></form></td></tr>"
         for s in servers
-    ) or "<tr><td colspan='5' class='muted'>Κανένα MCP server ακόμα.</td></tr>"
+    ) or "<tr><td colspan='6' class='muted'>Κανένα MCP server ακόμα.</td></tr>"
     body = f"""<h1>MCP Servers</h1>
-    <p class='muted'>Εξωτερικά εργαλεία (Higgsfield, OpenArt, ή οτιδήποτε άλλο μιλάει MCP) γίνονται διαθέσιμα στην ATHENA χωρίς αλλαγή κώδικα. Αν ένα εργαλείο μπορεί να κοστίσει (π.χ. δημιουργία εικόνας/video), άφησε το "Χρειάζεται έγκριση" ενεργό — η ATHENA θα ζητάει επιβεβαίωση στο <a href='/actions'>Ενέργειες</a> πριν κάθε κλήση.</p>
-    <div class='card'><table><tr><th>Όνομα</th><th>Transport</th><th>Έγκριση</th><th>Κατάσταση</th><th></th></tr>{rows}</table></div>
+    <p class='muted'>Εξωτερικά εργαλεία (Higgsfield, OpenArt, ή οτιδήποτε άλλο μιλάει MCP) γίνονται διαθέσιμα στην ATHENA χωρίς αλλαγή κώδικα. Αν ένα εργαλείο μπορεί να κοστίσει (π.χ. δημιουργία εικόνας/video), άφησε το "Χρειάζεται έγκριση" ενεργό — η ATHENA θα ζητάει επιβεβαίωση στο <a href='/actions'>Ενέργειες</a> πριν κάθε κλήση. Αν ο server απαντήσει 401/OAuth στο πρώτο refresh (φαίνεται σαν "εκκρεμεί σύνδεση" εδώ), πάτησε "Σύνδεση OAuth" — η ATHENA κάνει discovery + dynamic client registration αυτόματα και σε στέλνει στη σελίδα έγκρισης του server.</p>
+    <div class='card'><table><tr><th>Όνομα</th><th>Transport</th><th>Έγκριση</th><th>Κατάσταση</th><th>OAuth</th><th></th></tr>{rows}</table></div>
     <div class='card'><h2>Νέο MCP server</h2>
     <form method='post' action='/mcp'>
     <input type='hidden' name='csrf' value='{esc(user['csrf_token'])}'>
     <label>Όνομα<input name='name' required placeholder='Higgsfield'></label>
     <label>Transport<select name='transport'><option value='http'>http (URL, π.χ. cloud service)</option><option value='stdio'>stdio (τοπική εντολή)</option></select></label>
     <label>URL (για http)<input name='url' placeholder='https://mcp.higgsfield.ai/...'></label>
-    <label>Authorization header value (για http, προαιρετικό — π.χ. "Bearer sk-...")<input name='auth_header' type='password'></label>
+    <label>Authorization header value (για http, προαιρετικό — π.χ. "Bearer sk-...", μόνο αν ο server ΔΕΝ κάνει OAuth)<input name='auth_header' type='password'></label>
     <label>Εντολή (για stdio, π.χ. python -m my_server)<input name='command'></label>
     <label class='inline'><input type='checkbox' name='requires_confirmation' value='true' checked> Χρειάζεται έγκριση πριν κάθε κλήση (σύσταση: ναι για ό,τι κοστίζει)</label>
     <button>Προσθήκη</button></form></div>"""
@@ -2417,6 +2427,23 @@ async def mcp_delete_form(server_id: str, request: Request, user=Depends(require
     ok = remove_mcp_server(server_id)
     await refresh_tool_cache(force=True)
     audit(user["id"], "mcp_server_removed", {"server_id": server_id, "found": ok}, client_ip(request))
+    return RedirectResponse("/mcp", 303)
+
+
+@app.get("/mcp/{server_id}/oauth/start")
+async def mcp_oauth_start(server_id: str, request: Request, user=Depends(require_admin)):
+    url = await start_mcp_oauth(server_id, user["id"], request_base(request))
+    audit(user["id"], "mcp_oauth_started", {"server_id": server_id}, client_ip(request))
+    return RedirectResponse(url, 302)
+
+
+@app.get("/mcp/oauth/callback")
+async def mcp_oauth_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None, error_description: str | None = None):
+    if error or not code or not state:
+        raise HTTPException(400, f"MCP server authorization failed: {error_description or error or 'missing response'}")
+    user_id, server_id, name = await finish_mcp_oauth(code, state)
+    await refresh_tool_cache(force=True)
+    audit(user_id, "mcp_oauth_connected", {"server_id": server_id, "name": name}, client_ip(request))
     return RedirectResponse("/mcp", 303)
 
 
