@@ -5,11 +5,9 @@ import json
 import uuid
 from typing import Any
 
-import httpx
-
 from .config import MEDIA_DIR
 from .db import connect, utcnow
-from .cliproxy import CLIProxyError, automatic_route, chat_completions, generate_image, model_family
+from .cliproxy import CLIProxyError, automatic_route, chat_completions_stream, generate_image, model_family
 from .integrations import (
     asterisk_originate,
     calendar_list,
@@ -425,27 +423,54 @@ async def execute_tool(user, name: str, args: dict[str, Any]) -> Any:
     return {"status": "permission_denied", "error": "Tool is not available to this user"}
 
 
-async def _chat_with_failover(base_payload: dict[str, Any], model_order: list[str]) -> tuple[httpx.Response, str, list[dict[str, Any]]]:
+async def _stream_chat_with_failover(base_payload: dict[str, Any], model_order: list[str], on_delta=None):
+    """Streams the first model in model_order that accepts the connection,
+    forwarding text as it's generated to on_delta(text) if given, and returns
+    (content, tool_calls, model, failures) once the round is complete.
+
+    Failover across models is only possible before the first byte arrives for
+    a given model — once a model starts streaming content we commit to it
+    rather than discarding a partial answer the user may have already seen."""
     failures: list[dict[str, Any]] = []
     for model in model_order:
         payload = dict(base_payload)
         payload["model"] = model
+        if model_family(model) == "claude":
+            # Claude is ATHENA's "organizer" — the family that plans/reasons rather than
+            # just executes. Extended thinking needs temperature=1 and max_tokens strictly
+            # greater than the thinking budget, or Anthropic rejects the request outright —
+            # both are overridden here rather than left at the default 0.2/unset.
+            payload["temperature"] = 1
+            payload["max_tokens"] = 8192
+            payload["thinking"] = {"type": "enabled", "budget_tokens": 2000}
+        content_parts: list[str] = []
+        tool_calls: dict[int, dict[str, Any]] = {}
+        started = False
         try:
-            response = await chat_completions(payload)
+            async for chunk in chat_completions_stream(payload):
+                started = True
+                choice = (chunk.get("choices") or [{}])[0]
+                delta = choice.get("delta") or {}
+                if delta.get("content"):
+                    content_parts.append(delta["content"])
+                    if on_delta:
+                        await on_delta(delta["content"])
+                for tool_call_delta in delta.get("tool_calls") or []:
+                    index = tool_call_delta.get("index", 0)
+                    slot = tool_calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    if tool_call_delta.get("id"):
+                        slot["id"] = tool_call_delta["id"]
+                    function_delta = tool_call_delta.get("function") or {}
+                    if function_delta.get("name"):
+                        slot["function"]["name"] += function_delta["name"]
+                    if function_delta.get("arguments"):
+                        slot["function"]["arguments"] += function_delta["arguments"]
         except CLIProxyError as exc:
+            if started:
+                raise  # already showed the user partial output — surface the break rather than hide it
             failures.append({"model_family": model_family(model), "status": exc.status, "error": exc.message})
             continue
-        if response.status_code < 400:
-            return response, model, failures
-        failure = {
-            "model_family": model_family(model),
-            "status": "provider_http_error",
-            "provider_http_status": response.status_code,
-            "error": response.text[:500],
-        }
-        failures.append(failure)
-        if response.status_code in {401, 403}:
-            break
+        return "".join(content_parts), [tool_calls[i] for i in sorted(tool_calls)], model, failures
     raise CLIProxyError(
         "provider_unavailable",
         "Όλα τα διαθέσιμα τμήματα του εγκεφάλου LLM απέτυχαν για αυτό το αίτημα.",
@@ -453,7 +478,12 @@ async def _chat_with_failover(base_payload: dict[str, Any], model_order: list[st
     )
 
 
-async def ask(user, question: str) -> dict[str, Any]:
+async def ask(user, question: str, on_delta=None) -> dict[str, Any]:
+    """on_delta, if given, is an async callback invoked with each text chunk as
+    it's generated. A tool-calling round normally emits only tool_calls with no
+    content, so in practice this only fires real text during the round that
+    produces the final answer — but any commentary text a model streams
+    alongside a tool call is forwarded too rather than held back and guessed at."""
     try:
         route = await automatic_route(question)
     except CLIProxyError as exc:
@@ -525,7 +555,7 @@ async def ask(user, question: str) -> dict[str, Any]:
             request_body["tool_choice"] = "auto"
         current_order = [active_model, *[model for model in model_order if model != active_model]]
         try:
-            response, active_model, failures = await _chat_with_failover(request_body, current_order)
+            content, tool_calls, active_model, failures = await _stream_chat_with_failover(request_body, current_order, on_delta)
             all_failures.extend(failures)
         except CLIProxyError as exc:
             return {
@@ -538,23 +568,12 @@ async def ask(user, question: str) -> dict[str, Any]:
                     "brain_status": route["brain_status"],
                 },
             }
-        try:
-            data = response.json()
-            choice = data["choices"][0]["message"]
-        except (ValueError, KeyError, IndexError, TypeError):
-            return {
-                "status": "error",
-                "answer": "CLIProxyAPI επέστρεψε μη έγκυρη απάντηση chat-completions.",
-                "details": response.text[:2000],
-                "brain": {"selection": "athena_automatic", "route_family": model_family(active_model)},
-            }
-        assistant_message: dict[str, Any] = {"role": "assistant", "content": choice.get("content") or ""}
-        tool_calls = choice.get("tool_calls") or []
+        assistant_message: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls:
             assistant_message["tool_calls"] = tool_calls
         messages.append(assistant_message)
         if not tool_calls:
-            answer = choice.get("content") or ""
+            answer = content
             with connect() as conn:
                 conn.execute(
                     "INSERT INTO conversations(id,user_id,role,content,created_at) VALUES(?,?,?,?,?)",

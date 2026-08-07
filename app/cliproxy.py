@@ -136,10 +136,17 @@ def _select_family_model(models: list[str], *, prefer_fast: bool) -> str:
 
 
 def _task_profile(question: str) -> dict[str, Any]:
+    """Tommy's own framing (2026-08-07): Gemini takes the light stuff, Claude is the
+    organizer (reasoning/planning/coordination), Codex/OpenAI is the worker (execution,
+    coding, doing the actual task). Grok stays the realtime/social specialist. Claude
+    remains the default fallback for anything ambiguous or substantial — an organizer's
+    job when nothing else clearly claims the task."""
     value = question.lower()
-    coding = (
+    execution_work = (
         "code", "python", "docker", "github", "unraid", "api", "yaml", "json", "sql", "bug", "compile",
-        "κώδικ", "προγραμματ", "σφάλμα", "docker", "github", "unraid", "workflow", "script",
+        "build", "fix", "implement", "write", "create", "send", "upload", "run", "execute", "deploy",
+        "κώδικ", "προγραμματ", "σφάλμα", "workflow", "script", "φτιάξ", "στείλ", "ανέβασ", "εκτέλεσ",
+        "κάνε", "διόρθωσ", "γράψε",
     )
     google_multimodal = (
         "image", "photo", "video", "pdf", "vision", "map", "youtube", "gmail", "calendar", "google",
@@ -151,25 +158,38 @@ def _task_profile(question: str) -> dict[str, Any]:
     )
     deep_reasoning = (
         "analyze", "analysis", "architecture", "strategy", "compare", "explain", "plan", "research", "reasoning",
+        "why", "should", "decide", "recommend",
         "ανάλυσ", "αρχιτεκτον", "στρατηγ", "σύγκριν", "εξήγη", "σχέδιο", "έρευνα", "σχεδιασ",
+        "γιατί", "πρέπει", "αποφάσ", "προτείν",
+    )
+    light_quick = (
+        "hi", "hello", "thanks", "thank you", "what time", "what is", "quick", "simple", "translate", "spell", "define",
+        "γεια", "ευχαριστ", "τι ώρα", "τι είναι", "γρήγορ", "απλ", "μετάφρασ", "ορθογραφ", "ορισμ",
     )
     scores = {
-        "codex_openai": sum(1 for token in coding if token in value),
+        "codex_openai": sum(1 for token in execution_work if token in value),
         "gemini": sum(1 for token in google_multimodal if token in value),
         "grok": sum(1 for token in realtime_social if token in value),
         "claude": sum(1 for token in deep_reasoning if token in value),
     }
+    light_score = sum(1 for token in light_quick if token in value)
     if max(scores.values(), default=0) == 0:
-        primary_family = "claude"
-        reason = "general_coordination"
+        if light_score > 0 or len(question) < 60:
+            # Nothing substantial claimed it and it reads short/simple — this is exactly
+            # the "light topic" Gemini should take, not something worth Claude's reasoning.
+            primary_family = "gemini"
+            reason = "light_quick_task"
+        else:
+            primary_family = "claude"
+            reason = "general_coordination"
     else:
         priority = {"codex_openai": 4, "gemini": 3, "grok": 2, "claude": 1}
         primary_family = max(scores, key=lambda family: (scores[family], priority[family]))
         reason = {
-            "codex_openai": "software_and_technical_task",
-            "gemini": "google_or_multimodal_task",
+            "codex_openai": "execution_or_worker_task",
+            "gemini": "google_multimodal_or_light_task",
             "grok": "realtime_or_social_task",
-            "claude": "deep_reasoning_or_planning_task",
+            "claude": "deep_reasoning_or_organizer_task",
         }[primary_family]
     complexity = "complex" if len(question) >= 1200 or sum(scores.values()) >= 4 else "normal"
     return {
@@ -322,6 +342,41 @@ async def chat_completions(payload: dict[str, Any], timeout: float = 180.0) -> h
                 headers=api_headers(),
                 json=payload,
             )
+    except httpx.RequestError as exc:
+        raise CLIProxyError("provider_unavailable", str(exc)) from exc
+
+
+async def chat_completions_stream(payload: dict[str, Any], timeout: float = 180.0):
+    """Async generator over /v1/chat/completions with stream=True — yields each
+    parsed SSE chunk dict as it arrives instead of waiting for the full
+    response. This is what lets ATHENA show text as it's generated rather than
+    only after the whole answer (and any tool-calling round before it) finishes.
+    Raises CLIProxyError (before yielding anything) on a failed connection or
+    an error status from the very first response."""
+    payload = dict(payload)
+    payload["stream"] = True
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{CLIPROXY_INTERNAL_BASE_URL}/v1/chat/completions",
+                headers=api_headers(),
+                json=payload,
+            ) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    status = "provider_unavailable" if response.status_code in (401, 403) else "provider_http_error"
+                    raise CLIProxyError(status, body.decode("utf-8", "replace")[:500], details={"status_code": response.status_code})
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        yield json.loads(data)
+                    except ValueError:
+                        continue
     except httpx.RequestError as exc:
         raise CLIProxyError("provider_unavailable", str(exc)) from exc
 

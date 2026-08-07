@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -823,9 +823,36 @@ class AskRequest(BaseModel):
 async def api_ask(payload: AskRequest, request: Request, user=Depends(current_user)):
     verify_csrf(request, user)
     require_capability(user, "llm.use")
-    result = await ask(user, payload.question)
-    audit(user["id"], "assistant_question", {"status": result.get("status")}, client_ip(request))
-    return result
+
+    # Streamed as newline-delimited JSON so the browser can show text as it's
+    # generated instead of waiting for the whole (possibly multi-tool-round)
+    # answer — this used to be the single biggest reason ATHENA felt slow.
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_delta(text: str) -> None:
+        await queue.put({"event": "delta", "text": text})
+
+    async def run_ask() -> dict[str, Any]:
+        try:
+            result = await ask(user, payload.question, on_delta=on_delta)
+        except Exception as exc:
+            logging.getLogger("athena.ask").exception("ask() failed outside its own error handling")
+            result = {"status": "error", "answer": str(exc)}
+        await queue.put({"event": "done", "result": result})
+        return result
+
+    ask_task = asyncio.ensure_future(run_ask())
+
+    async def event_stream():
+        while True:
+            item = await queue.get()
+            yield json.dumps(item, ensure_ascii=False).encode("utf-8") + b"\n"
+            if item["event"] == "done":
+                break
+        result = await ask_task
+        audit(user["id"], "assistant_question", {"status": result.get("status")}, client_ip(request))
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @app.get("/api/status")

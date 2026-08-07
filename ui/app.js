@@ -125,17 +125,45 @@
   }
 
   // --- ask ---------------------------------------------------------------
+  // /api/ask streams newline-delimited JSON ({"event":"delta","text":...} then
+  // one final {"event":"done","result":{...}}) so text appears as it's
+  // generated instead of only once the whole answer is ready.
   async function ask(question) {
     if (!question.trim()) return;
     setReactor("thinking");
     answerCard.classList.remove("visible");
+    let streamed = "";
+    let shownFirstDelta = false;
     try {
       const response = await api("/api/ask", { method: "POST", body: JSON.stringify({ question }) });
-      const data = await response.json();
-      showAnswer(data.answer || "(χωρίς απάντηση)");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let result = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          if (!line) continue;
+          const item = JSON.parse(line);
+          if (item.event === "delta") {
+            streamed += item.text;
+            if (!shownFirstDelta) { shownFirstDelta = true; setReactor("thinking"); }
+            showAnswer(streamed);
+          } else if (item.event === "done") {
+            result = item.result;
+          }
+        }
+      }
+      const data = result || {};
+      showAnswer(data.answer || streamed || "(χωρίς απάντηση)");
       const family = data.brain && data.brain.route_family;
       modelLabel.textContent = family ? FAMILY_LABELS[family] || family : "";
-      await maybeSpeak(data.answer);
+      await maybeSpeak(data.answer || streamed);
       loadGraph(); // a new project/prompt/memory may have just been created
     } catch (err) {
       showAnswer("Σφάλμα: " + err.message);

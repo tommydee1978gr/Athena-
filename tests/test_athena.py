@@ -584,18 +584,12 @@ def test_orchestrator_selects_brain_internally_and_preserves_tool_calls(monkeypa
             "brain_status": "connected",
         }
 
-    class Response:
-        status_code = 200
-        text = ""
-        def json(self):
-            return {"choices": [{"message": {"role": "assistant", "content": "router answer"}}]}
-
-    async def fake_chat(payload, timeout=180.0):
+    async def fake_chat_stream(payload, timeout=180.0):
         seen.update(payload)
-        return Response()
+        yield {"choices": [{"delta": {"content": "router answer"}}]}
 
     monkeypatch.setattr(orchestrator, "automatic_route", fake_route)
-    monkeypatch.setattr(orchestrator, "chat_completions", fake_chat)
+    monkeypatch.setattr(orchestrator, "chat_completions_stream", fake_chat_stream)
     init_db()
     user_id = str(uuid.uuid4())
     now = utcnow()
@@ -624,22 +618,14 @@ def test_orchestrator_automatically_falls_back_to_another_brain_family(monkeypat
             "brain_status": "connected",
         }
 
-    class Response:
-        def __init__(self, status_code, payload=None, text=""):
-            self.status_code = status_code
-            self._payload = payload
-            self.text = text
-        def json(self):
-            return self._payload
-
-    async def fake_chat(payload, timeout=180.0):
+    async def fake_chat_stream(payload, timeout=180.0):
         attempts.append(payload["model"])
         if payload["model"] == "gpt-model":
-            return Response(503, text="provider unavailable")
-        return Response(200, {"choices": [{"message": {"role": "assistant", "content": "fallback answer"}}]})
+            raise cliproxy.CLIProxyError("provider_unavailable", "provider unavailable")
+        yield {"choices": [{"delta": {"content": "fallback answer"}}]}
 
     monkeypatch.setattr(orchestrator, "automatic_route", fake_route)
-    monkeypatch.setattr(orchestrator, "chat_completions", fake_chat)
+    monkeypatch.setattr(orchestrator, "chat_completions_stream", fake_chat_stream)
     init_db()
     user_id = str(uuid.uuid4())
     now = utcnow()
@@ -653,7 +639,7 @@ def test_orchestrator_automatically_falls_back_to_another_brain_family(monkeypat
 
 
 def test_ask_api_rejects_manual_model_selection(monkeypatch) -> None:
-    async def fake_ask(user, question):
+    async def fake_ask(user, question, on_delta=None):
         return {"status": "ready", "answer": question, "brain": {"selection": "athena_automatic"}}
     monkeypatch.setattr("app.main.ask", fake_ask)
     with TestClient(app) as client:
@@ -663,7 +649,9 @@ def test_ask_api_rejects_manual_model_selection(monkeypatch) -> None:
         assert denied.status_code == 422
         accepted = client.post("/api/ask", headers=headers, json={"question": "hello"})
         assert accepted.status_code == 200
-        assert accepted.json()["brain"]["selection"] == "athena_automatic"
+        events = [json.loads(line) for line in accepted.text.strip().split("\n")]
+        done = next(e for e in events if e["event"] == "done")
+        assert done["result"]["brain"]["selection"] == "athena_automatic"
 
 
 def test_no_fabricated_success_personal_secrets_or_multiple_image_contract() -> None:
