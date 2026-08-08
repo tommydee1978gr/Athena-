@@ -1978,7 +1978,7 @@ async def api_health_webhook(request: Request):
     except Exception as exc:
         raise HTTPException(400, "Invalid JSON body") from exc
     try:
-        result = ingest_metrics(row["id"], payload)
+        result = ingest_health_metrics(row["id"], payload)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     audit(row["id"], "health_metrics_ingested", {"inserted": result["inserted"], "skipped": result["skipped"]}, client_ip(request))
