@@ -300,6 +300,11 @@ def init_db() -> None:
               tv_media_entity TEXT NOT NULL DEFAULT '',
               tv_remote_entity TEXT NOT NULL DEFAULT '',
               tv_label TEXT NOT NULL DEFAULT '',
+              -- When set, room_only_gate (app/main.py) redirects every page
+              -- this user requests to /room — a kiosk-style lock for a young
+              -- child who should only ever see their own room controls, not
+              -- the rest of ATHENA. Set from /admin/users/{id}/edit.
+              restrict_to_room INTEGER NOT NULL DEFAULT 0,
               updated_at TEXT NOT NULL
             );
 
@@ -419,3 +424,9 @@ def init_db() -> None:
         persona_columns = {row["name"] for row in conn.execute("PRAGMA table_info(user_personas)").fetchall()}
         if "configured" not in persona_columns:
             conn.execute("ALTER TABLE user_personas ADD COLUMN configured INTEGER NOT NULL DEFAULT 0")
+
+        # user_room_devices.restrict_to_room: same situation, added after that
+        # table's first release.
+        room_columns = {row["name"] for row in conn.execute("PRAGMA table_info(user_room_devices)").fetchall()}
+        if "restrict_to_room" not in room_columns:
+            conn.execute("ALTER TABLE user_room_devices ADD COLUMN restrict_to_room INTEGER NOT NULL DEFAULT 0")

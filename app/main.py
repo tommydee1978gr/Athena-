@@ -113,7 +113,7 @@ from .security import (
 )
 from .health import ingest_metrics as ingest_health_metrics
 from .persona import get_persona, needs_wizard, set_persona
-from .room import get_room_devices, has_any_device, set_room_devices
+from .room import get_room_devices, has_any_device, is_restricted_to_room, set_room_devices, set_room_restriction
 from .ui import esc, layout, status_card
 from .voice import VoiceBackendError, elevenlabs_configured, elevenlabs_synthesize, elevenlabs_transcribe, enroll_voice, remove_voiceprint, runtime_status as voice_runtime_status, synthesize, transcribe, verify_voice
 
@@ -149,6 +149,23 @@ async def persona_wizard_gate(request: Request, call_next):
         session_user = get_session(request.cookies.get(SESSION_COOKIE))
         if session_user and needs_wizard(session_user["id"]):
             return RedirectResponse("/welcome", 303)
+    return await call_next(request)
+
+
+# Kiosk lock: a user with restrict_to_room=1 (set by an admin on their
+# /admin/users/{id}/edit page) may only ever GET /room — every other page
+# bounces there. Built for Tasos: he should never even see that the rest of
+# ATHENA exists. Mirrors persona_wizard_gate's exemption list, plus /room
+# itself so the redirect target isn't blocked.
+_ROOM_LOCK_EXEMPT_PREFIXES = ("/room", "/welcome", "/static/", "/api/", "/login", "/logout", "/health")
+
+
+@app.middleware("http")
+async def room_only_gate(request: Request, call_next):
+    if request.method == "GET" and not request.url.path.startswith(_ROOM_LOCK_EXEMPT_PREFIXES):
+        session_user = get_session(request.cookies.get(SESSION_COOKIE))
+        if session_user and is_restricted_to_room(session_user["id"]):
+            return RedirectResponse("/room", 303)
     return await call_next(request)
 
 
@@ -464,8 +481,64 @@ async def admin_user_edit_page(target_id: str, request: Request, user=Depends(re
     <label class='inline'><input type='checkbox' name='active' value='true' {'checked' if target['active'] else ''}>Ενεργός λογαριασμός</label>
     <button>Αποθήκευση</button></form></div><div class='card'><h2>Αλλαγή κωδικού</h2><form method='post' action='/admin/users/{esc(target_id)}/password'>
     <input type='hidden' name='csrf' value='{esc(user['csrf_token'])}'><label>Νέος κωδικός<input name='password' type='password' minlength='12' required></label><button>Αλλαγή κωδικού</button></form></div>
-    <p class='muted'>Ενεργοί διαχειριστές: {active_admins}. Η ATHENA δεν επιτρέπει απενεργοποίηση του τελευταίου ενεργού administrator.</p>"""
+    <p class='muted'>Ενεργοί διαχειριστές: {active_admins}. Η ATHENA δεν επιτρέπει απενεργοποίηση του τελευταίου ενεργού administrator.</p>
+    <div class='card'><h2>🏠 Δωμάτιο &amp; κλείδωμα</h2><p class='muted'>Ανάθεση συσκευών Home Assistant σε αυτόν τον χρήστη, και προαιρετικό κλείδωμα ώστε να βλέπει μόνο τη σελίδα του δωματίου του.</p>
+    <a class='button secondary' href='/admin/users/{esc(target_id)}/room'>Ρύθμιση δωματίου</a></div>"""
     return layout("Επεξεργασία χρήστη", body, user, user["csrf_token"])
+
+
+@app.get("/admin/users/{target_id}/room", response_class=HTMLResponse)
+async def admin_user_room_page(target_id: str, request: Request, user=Depends(require_admin)):
+    with connect() as conn:
+        target = conn.execute("SELECT id,display_name FROM users WHERE id=?", (target_id,)).fetchone()
+    if not target:
+        raise HTTPException(404, "User not found")
+    room = get_room_devices(target_id)
+    body = f"""<h1>Δωμάτιο — {esc(target['display_name'])}</h1>
+    <div class='card'><form method='post'><input type='hidden' name='csrf' value='{esc(user['csrf_token'])}'>
+    <label>Entity διακόπτη ρεύματος (switch.*)<input name='power_switch_entity' value='{esc(room['power_switch_entity'])}' placeholder='switch.tasos_power'></label>
+    <label>Ετικέτα διακόπτη<input name='power_switch_label' value='{esc(room['power_switch_label'])}' placeholder='Φώτα'></label>
+    <label>Entity λάμπας (light.*)<input name='light_entity' value='{esc(room['light_entity'])}' placeholder='light.tasos_lamp'></label>
+    <label>Ετικέτα λάμπας<input name='light_label' value='{esc(room['light_label'])}' placeholder='Λαμπατέρ'></label>
+    <label>Entity media player τηλεόρασης (media_player.*)<input name='tv_media_entity' value='{esc(room['tv_media_entity'])}' placeholder='media_player.tasos_tv'></label>
+    <label>Entity τηλεχειριστηρίου τηλεόρασης (remote.*)<input name='tv_remote_entity' value='{esc(room['tv_remote_entity'])}' placeholder='remote.tasos_tv'></label>
+    <label>Ετικέτα τηλεόρασης<input name='tv_label' value='{esc(room['tv_label'])}' placeholder='Τηλεόραση'></label>
+    <button>Αποθήκευση συσκευών</button></form></div>
+    <div class='card'><h2>🔒 Κλείδωμα στο δωμάτιο</h2><p class='muted'>Όταν είναι ενεργό, αυτός ο χρήστης βλέπει ΜΟΝΟ τη σελίδα /room — τίποτα άλλο στην ATHENA.</p>
+    <form method='post' action='/admin/users/{esc(target_id)}/room/restrict'><input type='hidden' name='csrf' value='{esc(user['csrf_token'])}'>
+    <label class='inline'><input type='checkbox' name='restrict_to_room' value='true' {'checked' if room['restrict_to_room'] else ''}>Κλείδωμα μόνο στο δωμάτιο</label>
+    <button>Αποθήκευση</button></form></div>"""
+    return layout("Δωμάτιο χρήστη", body, user, user["csrf_token"])
+
+
+@app.post("/admin/users/{target_id}/room")
+async def admin_user_room_save(
+    target_id: str, request: Request,
+    power_switch_entity: str = Form(""), power_switch_label: str = Form(""),
+    light_entity: str = Form(""), light_label: str = Form(""),
+    tv_media_entity: str = Form(""), tv_remote_entity: str = Form(""), tv_label: str = Form(""),
+    csrf: str = Form(...), user=Depends(require_admin),
+):
+    verify_csrf(request, user, csrf)
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE id=?", (target_id,)).fetchone():
+            raise HTTPException(404, "User not found")
+    set_room_devices(target_id, power_switch_entity=power_switch_entity, power_switch_label=power_switch_label,
+                      light_entity=light_entity, light_label=light_label,
+                      tv_media_entity=tv_media_entity, tv_remote_entity=tv_remote_entity, tv_label=tv_label)
+    audit(user["id"], "room_devices_updated", {"target_user": target_id}, client_ip(request))
+    return RedirectResponse(f"/admin/users/{target_id}/room", 303)
+
+
+@app.post("/admin/users/{target_id}/room/restrict")
+async def admin_user_room_restrict(target_id: str, request: Request, restrict_to_room: bool = Form(False), csrf: str = Form(...), user=Depends(require_admin)):
+    verify_csrf(request, user, csrf)
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE id=?", (target_id,)).fetchone():
+            raise HTTPException(404, "User not found")
+    set_room_restriction(target_id, restrict_to_room)
+    audit(user["id"], "room_restriction_updated", {"target_user": target_id, "restrict_to_room": restrict_to_room}, client_ip(request))
+    return RedirectResponse(f"/admin/users/{target_id}/room", 303)
 
 
 @app.post("/admin/users/{target_id}/edit")
