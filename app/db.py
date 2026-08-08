@@ -276,6 +276,10 @@ def init_db() -> None:
               persona_note TEXT NOT NULL DEFAULT '',
               voice_id TEXT NOT NULL DEFAULT '',
               avatar_url TEXT NOT NULL DEFAULT '',
+              -- Set once the user finishes (or explicitly skips) the first-login
+              -- persona wizard — absent/0 means every page load redirects them
+              -- to /welcome first, see the persona_wizard_gate middleware.
+              configured INTEGER NOT NULL DEFAULT 0,
               updated_at TEXT NOT NULL
             );
 
@@ -388,3 +392,10 @@ def init_db() -> None:
         memories_count = conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()["c"]
         if fts_count == 0 and memories_count > 0:
             conn.execute("INSERT INTO memories_fts(rowid, text) SELECT rowid, text FROM memories")
+
+        # user_personas.configured: added after that table's first release, so
+        # CREATE TABLE IF NOT EXISTS above is a no-op on a DB that already has
+        # the table — needs its own explicit, idempotent migration.
+        persona_columns = {row["name"] for row in conn.execute("PRAGMA table_info(user_personas)").fetchall()}
+        if "configured" not in persona_columns:
+            conn.execute("ALTER TABLE user_personas ADD COLUMN configured INTEGER NOT NULL DEFAULT 0")

@@ -112,7 +112,7 @@ from .security import (
     revoke_satellite_token,
 )
 from .health import ingest_metrics as ingest_health_metrics
-from .persona import get_persona, set_persona
+from .persona import get_persona, needs_wizard, set_persona
 from .ui import esc, layout, status_card
 from .voice import VoiceBackendError, elevenlabs_configured, elevenlabs_synthesize, elevenlabs_transcribe, enroll_voice, remove_voiceprint, runtime_status as voice_runtime_status, synthesize, transcribe, verify_voice
 
@@ -132,6 +132,23 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=lifespan)
 if UI_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(UI_DIR)), name="static")
+
+
+# Paths a not-yet-onboarded user must still be able to reach — the wizard
+# page itself, its own save/skip call, static assets it needs to render, and
+# session/auth plumbing. Everything else (GET requests only — this is about
+# page navigation, not blocking API calls from a page already loaded) bounces
+# to /welcome until that user's persona row has configured=1.
+_WIZARD_EXEMPT_PREFIXES = ("/welcome", "/static/", "/api/", "/login", "/logout", "/health")
+
+
+@app.middleware("http")
+async def persona_wizard_gate(request: Request, call_next):
+    if request.method == "GET" and not request.url.path.startswith(_WIZARD_EXEMPT_PREFIXES):
+        session_user = get_session(request.cookies.get(SESSION_COOKIE))
+        if session_user and needs_wizard(session_user["id"]):
+            return RedirectResponse("/welcome", 303)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -1796,10 +1813,37 @@ async def api_persona_set(payload: PersonaRequest, request: Request, user=Depend
     return result
 
 
-@app.get("/voice", response_class=HTMLResponse)
-async def voice_page(request: Request, user=Depends(current_user)):
-    require_capability(user, "voice.use")
+@app.get("/welcome", response_class=HTMLResponse)
+async def welcome_page(request: Request, user=Depends(current_user)):
+    """First-login persona wizard — every account lands here before anywhere
+    else in the app until they finish or explicitly skip it (see
+    persona_wizard_gate below), so nobody has to already know /voice exists
+    to set their own name/voice/avatar. Deliberately its own minimal page,
+    not a modal bolted onto /graph — a modal could be dismissed by clicking
+    outside it or hitting Escape and forgotten; a real page can't be."""
     persona = get_persona(user["id"])
+    voice_field, avatar_field = _persona_picker_fields(persona)
+    body = f"""<h1>Καλώς ήρθες, {esc(user['display_name'])}! 👋</h1>
+    <div class='card'><p>Πριν ξεκινήσουμε, πες μας πώς θέλεις να σε λέει η βοηθός σου — μπορείς να τ' αλλάξεις όποτε θες αργότερα από το «Φωνή».</p>
+      <label>Όνομα (κενό = "ATHENA")<input id='personaName' value='{esc(persona["assistant_name"])}' maxlength='40' placeholder='π.χ. Ζωή'></label>
+      <label>Σημείωση προσωπικότητας (προαιρετικό — π.χ. "μίλα πιο παιχνιδιάρικα, μιλάω μαζί σου σαν φίλος")<textarea id='personaNote' maxlength='500'>{esc(persona["persona_note"])}</textarea></label>
+      {voice_field}
+      {avatar_field}
+      <button onclick='finishWizard()'>Ας ξεκινήσουμε</button>
+      <button class='secondary' onclick='skipWizard()'>Παράλειψη, θα το κάνω αργότερα</button>
+      <pre id='personaOut'></pre></div>
+    <script>
+    function selectPersonaAvatar(url){{personaAvatarUrl.value=url;document.querySelectorAll('[data-avatar-thumb]').forEach(img=>{{img.style.border='3px solid '+(img.getAttribute('data-avatar-thumb')===url?'var(--accent)':'transparent')}})}}
+    async function finishWizard(){{try{{await api('/api/persona',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{assistant_name:personaName.value,persona_note:personaNote.value,voice_id:personaVoiceId.value,avatar_url:personaAvatarUrl.value}})}});location.href='/graph'}}catch(e){{personaOut.textContent=e.message}}}}
+    async function skipWizard(){{try{{await api('/api/persona',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{assistant_name:'',persona_note:'',voice_id:'',avatar_url:''}})}});location.href='/graph'}}catch(e){{personaOut.textContent=e.message}}}}
+    </script>"""
+    return layout("Καλώς ήρθες", body, user, user["csrf_token"])
+
+
+def _persona_picker_fields(persona: dict) -> tuple[str, str]:
+    """Shared by /voice (edit anytime) and /welcome (first-login wizard) —
+    same picker markup, same JS hooks (selectPersonaAvatar/#personaVoiceId/
+    #personaAvatarUrl), just embedded in a different surrounding page."""
     voice_choices = get_system_setting("persona_voice_choices", []) or []
     voice_options = "<option value=''>(system default)</option>" + "".join(
         f"<option value='{esc(v['voice_id'])}' {'selected' if v['voice_id'] == persona['voice_id'] else ''}>{esc(v['label'])}</option>"
@@ -1816,13 +1860,21 @@ async def voice_page(request: Request, user=Depends(current_user)):
         f"<label>Φωνή<select id='personaVoiceId'>{voice_options}</select></label>" if voice_choices
         else "<p class='muted'>Δεν έχουν ρυθμιστεί φωνές ακόμα από τον διαχειριστή.</p><input type='hidden' id='personaVoiceId' value=''>"
     )
-    # Kept out of the big JS-heavy template below on purpose — that one is a
-    # plain (non-f) string so its literal { } in the JS don't need escaping;
-    # only this small HTML-only fragment needs interpolation.
     avatar_field = (
         f"<label>Avatar</label><div style='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px'>{avatar_thumbs}</div><input type='hidden' id='personaAvatarUrl' value='{esc(persona['avatar_url'])}'>"
         if avatar_choices else "<p class='muted'>Δεν έχουν ρυθμιστεί avatar εικόνες ακόμα από τον διαχειριστή.</p><input type='hidden' id='personaAvatarUrl' value=''>"
     )
+    return voice_field, avatar_field
+
+
+@app.get("/voice", response_class=HTMLResponse)
+async def voice_page(request: Request, user=Depends(current_user)):
+    require_capability(user, "voice.use")
+    persona = get_persona(user["id"])
+    voice_field, avatar_field = _persona_picker_fields(persona)
+    # Kept out of the big JS-heavy template below on purpose — that one is a
+    # plain (non-f) string so its literal { } in the JS don't need escaping;
+    # only this small HTML-only fragment needs interpolation.
     persona_card = f"""<div class='card'><h2>Το προσωπικό σου ATHENA</h2><p>Πώς θέλεις να σε λέει/να παρουσιάζεται όταν μιλάει σε ΕΣΕΝΑ — ισχύει μόνο στον δικό σου λογαριασμό, δεν αλλάζει τίποτα για τους υπόλοιπους.</p>
       <label>Όνομα (κενό = "ATHENA")<input id='personaName' value='{esc(persona["assistant_name"])}' maxlength='40' placeholder='π.χ. Ζωή'></label>
       <label>Σημείωση προσωπικότητας (προαιρετικό — π.χ. "μίλα πιο παιχνιδιάρικα, μιλάω μαζί σου σαν φίλος")<textarea id='personaNote' maxlength='500'>{esc(persona["persona_note"])}</textarea></label>

@@ -66,6 +66,16 @@ def bootstrap(client: TestClient) -> None:
     )
     assert response.status_code == 303, response.text
     assert client.get("/health").json()["status"] == "ok"
+    # Every other test in this file navigates straight to arbitrary pages
+    # after bootstrap() — mark the persona wizard (added 2026-08-08, see
+    # app/persona.py) as already done so persona_wizard_gate doesn't bounce
+    # them all to /welcome. Tests that actually exercise the wizard itself
+    # reset this explicitly.
+    with connect() as conn:
+        admin_row = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
+    from app.persona import set_persona
+
+    set_persona(str(admin_row["id"]), configured=True)
 
 
 def csrf(client: TestClient) -> str:
@@ -94,6 +104,9 @@ def add_child(client: TestClient, *, username: str = "child") -> str:
     with connect() as conn:
         row = conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
     assert row
+    from app.persona import set_persona  # see bootstrap()'s comment — same reasoning
+
+    set_persona(str(row["id"]), configured=True)
     return str(row["id"])
 
 
@@ -193,6 +206,35 @@ def test_configuration_and_tokens_are_encrypted_and_blank_secret_fields_preserve
         for value in (secret, "private-token", "private-refresh"):
             assert value.encode() not in raw
         assert MASTER_KEY_PATH.stat().st_mode & 0o777 == 0o600
+
+
+def test_persona_wizard_gate_forces_welcome_until_configured() -> None:
+    with TestClient(app) as client:
+        bootstrap(client)
+        # bootstrap() marks the wizard done so every other test is unaffected —
+        # undo that here to exercise the actual first-login behavior.
+        from app.persona import get_persona, set_persona
+
+        set_persona(admin_id(), configured=False)
+
+        response = client.get("/graph", follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/welcome"
+
+        # /welcome itself, static assets, and the API must stay reachable —
+        # otherwise the wizard page couldn't even render or save.
+        assert client.get("/welcome", follow_redirects=False).status_code == 200
+
+        response = client.post(
+            "/api/persona",
+            headers={"X-CSRF-Token": csrf(client)},
+            json={"assistant_name": "Ζωή", "persona_note": "", "voice_id": "", "avatar_url": ""},
+        )
+        assert response.status_code == 200
+        assert get_persona(admin_id())["configured"] is True
+
+        # Now that it's configured, normal navigation is unblocked again.
+        assert client.get("/graph", follow_redirects=False).status_code == 200
 
 
 def test_family_accounts_permissions_and_personal_connector_isolation() -> None:
