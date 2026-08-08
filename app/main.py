@@ -113,6 +113,7 @@ from .security import (
 )
 from .health import ingest_metrics as ingest_health_metrics
 from .persona import get_persona, needs_wizard, set_persona
+from .room import get_room_devices, has_any_device, set_room_devices
 from .ui import esc, layout, status_card
 from .voice import VoiceBackendError, elevenlabs_configured, elevenlabs_synthesize, elevenlabs_transcribe, enroll_voice, remove_voiceprint, runtime_status as voice_runtime_status, synthesize, transcribe, verify_voice
 
@@ -1347,6 +1348,92 @@ async def api_ha_service(payload: HAServiceRequest, request: Request, user=Depen
     return result
 
 
+class RoomSwitchRequest(BaseModel):
+    on: bool
+
+
+class RoomLightRequest(BaseModel):
+    brightness: int | None = Field(default=None, ge=0, le=255)
+    rgb_color: list[int] | None = None
+    color_temp_kelvin: int | None = Field(default=None, ge=1000, le=10000)
+    effect: str | None = Field(default=None, max_length=40)
+
+
+_ROOM_REMOTE_COMMANDS = {"HOME", "BACK", "DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "DPAD_CENTER", "POWER"}
+
+
+class RoomRemoteRequest(BaseModel):
+    command: str = Field(pattern="|".join(_ROOM_REMOTE_COMMANDS))
+
+
+class RoomVolumeRequest(BaseModel):
+    action: Literal["up", "down", "mute"]
+
+
+@app.post("/api/room/switch")
+async def api_room_switch(payload: RoomSwitchRequest, request: Request, user=Depends(current_user)):
+    verify_csrf(request, user)
+    require_capability(user, "room.control")
+    room = get_room_devices(user["id"])
+    if not room["power_switch_entity"]:
+        raise HTTPException(409, "Δεν έχει ρυθμιστεί διακόπτης για το δωμάτιό σου")
+    service = "turn_on" if payload.on else "turn_off"
+    result = await homeassistant_request("POST", f"/api/services/switch/{service}", json={"entity_id": room["power_switch_entity"]})
+    audit(user["id"], "room_switch", {"entity_id": room["power_switch_entity"], "on": payload.on}, client_ip(request))
+    return result
+
+
+@app.post("/api/room/light")
+async def api_room_light(payload: RoomLightRequest, request: Request, user=Depends(current_user)):
+    verify_csrf(request, user)
+    require_capability(user, "room.control")
+    room = get_room_devices(user["id"])
+    if not room["light_entity"]:
+        raise HTTPException(409, "Δεν έχει ρυθμιστεί λάμπα για το δωμάτιό σου")
+    data: dict[str, Any] = {"entity_id": room["light_entity"]}
+    if payload.brightness is not None:
+        data["brightness"] = payload.brightness
+    if payload.rgb_color is not None:
+        if len(payload.rgb_color) != 3 or any(not (0 <= c <= 255) for c in payload.rgb_color):
+            raise HTTPException(400, "rgb_color must be [r,g,b] with each 0-255")
+        data["rgb_color"] = payload.rgb_color
+    if payload.color_temp_kelvin is not None:
+        data["color_temp_kelvin"] = payload.color_temp_kelvin
+    if payload.effect is not None:
+        data["effect"] = payload.effect
+    result = await homeassistant_request("POST", "/api/services/light/turn_on", json=data)
+    audit(user["id"], "room_light", {"entity_id": room["light_entity"], **{k: v for k, v in data.items() if k != "entity_id"}}, client_ip(request))
+    return result
+
+
+@app.post("/api/room/tv/remote")
+async def api_room_tv_remote(payload: RoomRemoteRequest, request: Request, user=Depends(current_user)):
+    verify_csrf(request, user)
+    require_capability(user, "room.control")
+    room = get_room_devices(user["id"])
+    if not room["tv_remote_entity"]:
+        raise HTTPException(409, "Δεν έχει ρυθμιστεί τηλεκοντρόλ για το δωμάτιό σου")
+    result = await homeassistant_request("POST", "/api/services/remote/send_command", json={"entity_id": room["tv_remote_entity"], "command": payload.command})
+    audit(user["id"], "room_tv_remote", {"entity_id": room["tv_remote_entity"], "command": payload.command}, client_ip(request))
+    return result
+
+
+@app.post("/api/room/tv/volume")
+async def api_room_tv_volume(payload: RoomVolumeRequest, request: Request, user=Depends(current_user)):
+    verify_csrf(request, user)
+    require_capability(user, "room.control")
+    room = get_room_devices(user["id"])
+    if not room["tv_media_entity"]:
+        raise HTTPException(409, "Δεν έχει ρυθμιστεί τηλεόραση για το δωμάτιό σου")
+    service = {"up": "volume_up", "down": "volume_down", "mute": "volume_mute"}[payload.action]
+    data = {"entity_id": room["tv_media_entity"]}
+    if payload.action == "mute":
+        data["is_volume_muted"] = True
+    result = await homeassistant_request("POST", f"/api/services/media_player/{service}", json=data)
+    audit(user["id"], "room_tv_volume", {"entity_id": room["tv_media_entity"], "action": payload.action}, client_ip(request))
+    return result
+
+
 @app.get("/api/emby/sessions")
 async def api_emby_sessions(user=Depends(current_user)):
     require_capability(user, "emby.read")
@@ -1760,7 +1847,7 @@ async def graph_page(request: Request, user=Depends(current_user)):
     </head><body>
     <header id='hudNav'>
       <img class='mark' src='/static/avatar-mark.jpg' alt=''>
-      <nav><a href='/'>Αρχική</a><a class='current' href='/graph'>Γράφος</a><a href='/integrations'>Συνδέσεις</a>
+      <nav><a href='/'>Αρχική</a><a class='current' href='/graph'>Γράφος</a><a href='/room'>🏠 Δωμάτιό μου</a><a href='/integrations'>Συνδέσεις</a>
       <a href='/family'>Οικογένεια</a><a href='/location'>Τοποθεσία</a><a href='/actions'>Ενέργειες</a>
       <a href='/media-library'>Media</a><a href='/memory'>Μνήμη</a><a href='/voice'>Φωνή</a>
       <a href='/releases'>DistroKid</a>{admin_nav}<a href='/account'>Λογαριασμός</a><a href='/logout'>Έξοδος</a></nav>
@@ -1838,6 +1925,85 @@ async def welcome_page(request: Request, user=Depends(current_user)):
     async function skipWizard(){{try{{await api('/api/persona',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{assistant_name:'',persona_note:'',voice_id:'',avatar_url:''}})}});location.href='/graph'}}catch(e){{personaOut.textContent=e.message}}}}
     </script>"""
     return layout("Καλώς ήρθες", body, user, user["csrf_token"])
+
+
+_ROOM_COLOR_SWATCHES = [
+    ("Ζεστό", "#ffd48a", {"color_temp_kelvin": 2700}),
+    ("Ψυχρό", "#cfe8ff", {"color_temp_kelvin": 6000}),
+    ("Κόκκινο", "#ff3b3b", {"rgb_color": [255, 0, 0]}),
+    ("Πορτοκαλί", "#ff910a", {"rgb_color": [255, 140, 0]}),
+    ("Κίτρινο", "#ffe000", {"rgb_color": [255, 220, 0]}),
+    ("Πράσινο", "#22d47a", {"rgb_color": [0, 200, 80]}),
+    ("Μπλε", "#3f7bff", {"rgb_color": [30, 100, 255]}),
+    ("Μωβ", "#a84fe0", {"rgb_color": [160, 60, 220]}),
+    ("Ροζ", "#ff6ac1", {"rgb_color": [255, 90, 170]}),
+]
+
+
+@app.get("/room", response_class=HTMLResponse)
+async def room_page(request: Request, user=Depends(current_user)):
+    require_capability(user, "room.control")
+    room = get_room_devices(user["id"])
+    if not has_any_device(room):
+        body = "<h1>🏠 Το δωμάτιό μου</h1><div class='card'><p>Δεν έχουν ρυθμιστεί ακόμα συσκευές για το δωμάτιό σου — πες σε έναν ενήλικα να τις προσθέσει.</p></div>"
+        return layout("Το δωμάτιό μου", body, user, user["csrf_token"])
+
+    lights_card = ""
+    if room["power_switch_entity"]:
+        lights_card += f"""<div class='card' style='text-align:center'><h2>💡 {esc(room['power_switch_label'] or 'Φώτα')}</h2>
+          <button onclick='roomSwitch(true)' style='font-size:20px;padding:22px 36px;margin:6px;background:var(--ok);color:#071022;border:none;border-radius:14px;font-weight:700'>ΑΝΑΨΕ</button>
+          <button onclick='roomSwitch(false)' style='font-size:20px;padding:22px 36px;margin:6px;background:var(--bad);color:#071022;border:none;border-radius:14px;font-weight:700'>ΣΒΗΣΕ</button>
+          <div id='switchOut' class='muted'></div></div>"""
+    if room["light_entity"]:
+        swatch_buttons = "".join(
+            f"<button onclick='roomLightColor({json.dumps(params)})' title='{esc(label)}' "
+            f"style='width:56px;height:56px;border-radius:50%;margin:6px;border:3px solid var(--line);background:{hexcolor};cursor:pointer'></button>"
+            for label, hexcolor, params in _ROOM_COLOR_SWATCHES
+        )
+        lights_card += f"""<div class='card' style='text-align:center'><h2>🎨 Χρώμα λάμπας {esc(room['light_label'])}</h2>
+          <div style='display:flex;flex-wrap:wrap;justify-content:center'>{swatch_buttons}</div>
+          <h3>Φωτεινότητα</h3>
+          <input type='range' id='roomBrightness' min='10' max='255' value='180' oninput='roomLightBrightness(this.value)' style='width:80%'>
+          <h3>Εφέ</h3>
+          <button onclick=\"roomLightEffect('Party')\" style='font-size:18px;padding:14px 22px;margin:6px;border-radius:12px;border:1px solid var(--line);background:var(--card-2);color:var(--text);cursor:pointer'>🎉 Πάρτι</button>
+          <button onclick=\"roomLightEffect('Relax')\" style='font-size:18px;padding:14px 22px;margin:6px;border-radius:12px;border:1px solid var(--line);background:var(--card-2);color:var(--text);cursor:pointer'>😌 Χαλάρωσε</button>
+          <button onclick=\"roomLightEffect('Off')\" style='font-size:18px;padding:14px 22px;margin:6px;border-radius:12px;border:1px solid var(--line);background:var(--card-2);color:var(--text);cursor:pointer'>✨ Καθαρό</button>
+          <div id='lightOut' class='muted'></div></div>"""
+
+    tv_card = ""
+    if room["tv_remote_entity"] or room["tv_media_entity"]:
+        tv_card = f"""<div class='card' style='text-align:center'><h2>📺 {esc(room['tv_label'] or 'Τηλεόραση')}</h2>
+          <div>
+            <button onclick=\"roomRemote('BACK')\" class='room-remote-btn'>⬅️ Πίσω</button>
+            <button onclick=\"roomRemote('HOME')\" class='room-remote-btn'>🏠 Αρχική</button>
+          </div>
+          <div style='display:grid;grid-template-columns:64px 64px 64px;gap:8px;justify-content:center;margin:16px auto'>
+            <div></div><button onclick=\"roomRemote('DPAD_UP')\" class='room-remote-btn'>⬆️</button><div></div>
+            <button onclick=\"roomRemote('DPAD_LEFT')\" class='room-remote-btn'>⬅️</button>
+            <button onclick=\"roomRemote('DPAD_CENTER')\" class='room-remote-btn' style='background:var(--accent);color:#071022'>OK</button>
+            <button onclick=\"roomRemote('DPAD_RIGHT')\" class='room-remote-btn'>➡️</button>
+            <div></div><button onclick=\"roomRemote('DPAD_DOWN')\" class='room-remote-btn'>⬇️</button><div></div>
+          </div>
+          <div>
+            <button onclick=\"roomVolume('down')\" class='room-remote-btn'>🔉</button>
+            <button onclick=\"roomVolume('mute')\" class='room-remote-btn'>🔇</button>
+            <button onclick=\"roomVolume('up')\" class='room-remote-btn'>🔊</button>
+          </div>
+          <div id='tvOut' class='muted'></div></div>"""
+
+    body = f"""<h1>🏠 Το δωμάτιό μου</h1>
+    <style>.room-remote-btn{{font-size:22px;padding:16px;margin:5px;min-width:60px;border-radius:12px;border:1px solid var(--line);background:var(--card-2);color:var(--text);cursor:pointer}}
+    .room-remote-btn:active{{background:var(--accent);color:#071022}}</style>
+    <div class='grid'>{lights_card}{tv_card}</div>
+    <script>
+    async function roomSwitch(on){{try{{await api('/api/room/switch',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{on}})}});switchOut.textContent=on?'Άναψε!':'Έσβησε!'}}catch(e){{switchOut.textContent=e.message}}}}
+    async function roomLightColor(params){{try{{await api('/api/room/light',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(params)}});lightOut.textContent='Έγινε!'}}catch(e){{lightOut.textContent=e.message}}}}
+    async function roomLightBrightness(v){{try{{await api('/api/room/light',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{brightness:parseInt(v)}})}});lightOut.textContent='Φωτεινότητα!'}}catch(e){{lightOut.textContent=e.message}}}}
+    async function roomLightEffect(effect){{try{{await api('/api/room/light',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{effect}})}});lightOut.textContent='Έγινε!'}}catch(e){{lightOut.textContent=e.message}}}}
+    async function roomRemote(command){{try{{await api('/api/room/tv/remote',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{command}})}});tvOut.textContent=''}}catch(e){{tvOut.textContent=e.message}}}}
+    async function roomVolume(action){{try{{await api('/api/room/tv/volume',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{action}})}});tvOut.textContent=''}}catch(e){{tvOut.textContent=e.message}}}}
+    </script>"""
+    return layout("Το δωμάτιό μου", body, user, user["csrf_token"])
 
 
 def _persona_picker_fields(persona: dict) -> tuple[str, str]:

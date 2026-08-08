@@ -283,6 +283,26 @@ def init_db() -> None:
               updated_at TEXT NOT NULL
             );
 
+            -- Admin-assigned "this is MY room" device set per user (2026-08-08,
+            -- Tasos) — a simple, kid-safe control surface: a person can only
+            -- ever act on the exact entities assigned here (enforced in
+            -- app/room.py / the /api/room/* routes), never arbitrary HA
+            -- entities, and those actions execute immediately with no
+            -- confirm-first step (same "autonomous" reasoning as Emby/Asterisk
+            -- in orchestrator.py — this is the person's own hands directly
+            -- operating their own room, not the AI proposing anything).
+            CREATE TABLE IF NOT EXISTS user_room_devices(
+              user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+              power_switch_entity TEXT NOT NULL DEFAULT '',
+              power_switch_label TEXT NOT NULL DEFAULT '',
+              light_entity TEXT NOT NULL DEFAULT '',
+              light_label TEXT NOT NULL DEFAULT '',
+              tv_media_entity TEXT NOT NULL DEFAULT '',
+              tv_remote_entity TEXT NOT NULL DEFAULT '',
+              tv_label TEXT NOT NULL DEFAULT '',
+              updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS satellite_tokens(
               token_hash TEXT PRIMARY KEY,
               user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -10,7 +10,7 @@ ALL_CAPABILITIES = {
     "homeassistant.read", "homeassistant.control",
     "emby.read", "emby.control", "voip.call", "distrokid.manage", "llm.use", "audit.read",
     "creative.read", "creative.write", "routines.manage", "notifications.manage", "mcp.use",
-    "network.read", "network.control", "infra.read", "infra.control", "health.read",
+    "network.read", "network.control", "infra.read", "infra.control", "health.read", "room.control",
 }
 
 ROLE_DEFAULTS = {
@@ -22,7 +22,7 @@ ROLE_DEFAULTS = {
     "child": {
         "integrations.connect", "memory.private", "memory.family", "family.tasks.read", "family.tasks.write", "family.locations.read", "location.share",
         "voice.use", "voice.enroll", "calendar.read", "tasks.read", "tasks.write", "youtube.read", "spotify.read", "emby.read", "llm.use",
-        "creative.read", "creative.write", "health.read",
+        "creative.read", "creative.write", "health.read", "room.control",
     },
     "guest": {"memory.private", "family.tasks.read", "voice.use", "llm.use"},
 }

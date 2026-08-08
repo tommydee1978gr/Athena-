@@ -141,7 +141,7 @@ def layout(title: str, body: str, user: Any = None, csrf: str = "", centered: bo
         admin = "<a href='/admin/users'>Χρήστες</a><a href='/mcp'>MCP</a>" if user["role"] == "admin" else ""
         nav = (
             "<nav>"
-            "<a href='/'>Αρχική</a><a href='/graph'>Γράφος</a><a href='/integrations'>Συνδέσεις</a>"
+            "<a href='/'>Αρχική</a><a href='/graph'>Γράφος</a><a href='/room'>🏠 Δωμάτιό μου</a><a href='/integrations'>Συνδέσεις</a>"
             "<a href='/family'>Οικογένεια</a><a href='/location'>Τοποθεσία</a><a href='/actions'>Ενέργειες</a>"
             "<a href='/media-library'>Media</a><a href='/memory'>Μνήμη</a><a href='/voice'>Φωνή</a>"
             f"<a href='/releases'>DistroKid</a>{admin}<a href='/account'>Λογαριασμός</a><a href='/logout'>Έξοδος</a>"
