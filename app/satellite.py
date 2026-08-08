@@ -42,6 +42,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from .config import TEMP_DIR
 from .orchestrator import ask
+from .persona import get_persona
 from .voice import VoiceBackendError, elevenlabs_configured, elevenlabs_synthesize, elevenlabs_transcribe, transcribe
 
 logger = logging.getLogger("athena.satellite")
@@ -92,7 +93,7 @@ SPEECH_CHARS_PER_SECOND = 14.0  # rough Greek TTS speaking rate, used only to si
 MIN_SPEAKING_HOLD_SECONDS = 1.0
 
 
-async def _speak_back(ws: WebSocket, text: str) -> float:
+async def _speak_back(ws: WebSocket, text: str, voice_id: str | None = None) -> float:
     """Sends the TTS reply and returns how many seconds the caller should
     keep ignoring incoming mic audio for — sending the bytes only queues
     them, it does not wait for the satellite to actually finish playing
@@ -103,7 +104,7 @@ async def _speak_back(ws: WebSocket, text: str) -> float:
     if not text or not elevenlabs_configured():
         return 0.0
     try:
-        audio = await elevenlabs_synthesize(text)
+        audio = await elevenlabs_synthesize(text, voice_id or None)
         await ws.send_bytes(audio)
         return max(MIN_SPEAKING_HOLD_SECONDS, len(text) / SPEECH_CHARS_PER_SECOND)
     except VoiceBackendError as exc:
@@ -225,6 +226,6 @@ async def _finish_command(ws: WebSocket, user: dict[str, Any], command: bytearra
         await ws.send_json({"event": "error", "message": str(exc)})
     if answer:
         await ws.send_json({"event": "answer", "text": answer})
-        hold_seconds = await _speak_back(ws, answer)
+        hold_seconds = await _speak_back(ws, answer, get_persona(user["id"])["voice_id"])
     await ws.send_json({"event": "idle"})
     return hold_seconds

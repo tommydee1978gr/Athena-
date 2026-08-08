@@ -265,6 +265,20 @@ def init_db() -> None:
               updated_at TEXT NOT NULL
             );
 
+            -- Per-user override of how ATHENA presents itself to that specific
+            -- person — a different name and/or ElevenLabs voice per family
+            -- member, rather than one fixed identity for everyone (2026-08-08,
+            -- Tasos wanted his own). Same 1:1-companion-table shape as
+            -- voiceprints/location_consent: absent row = use the defaults.
+            CREATE TABLE IF NOT EXISTS user_personas(
+              user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+              assistant_name TEXT NOT NULL DEFAULT '',
+              persona_note TEXT NOT NULL DEFAULT '',
+              voice_id TEXT NOT NULL DEFAULT '',
+              avatar_url TEXT NOT NULL DEFAULT '',
+              updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS satellite_tokens(
               token_hash TEXT PRIMARY KEY,
               user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

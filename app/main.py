@@ -112,6 +112,7 @@ from .security import (
     revoke_satellite_token,
 )
 from .health import ingest_metrics as ingest_health_metrics
+from .persona import get_persona, set_persona
 from .ui import esc, layout, status_card
 from .voice import VoiceBackendError, elevenlabs_configured, elevenlabs_synthesize, elevenlabs_transcribe, enroll_voice, remove_voiceprint, runtime_status as voice_runtime_status, synthesize, transcribe, verify_voice
 
@@ -619,6 +620,15 @@ async def integrations_page(request: Request, user=Depends(current_user)):
         omada = get_app_config("omada") or {}
         unraid = get_app_config("unraid") or {}
         voice_cfg = get_system_setting("voice", {}) or {}
+        persona_voice_choices = (get_system_setting("persona_voice_choices", []) or []) + [{}] * 5
+        default_avatar_choices = [
+            {"label": "ATHENA (προεπιλογή)", "url": "/static/avatar.jpg"},
+            {"label": "Αγόρι", "url": "/static/persona-avatars/persona-boy.png"},
+            {"label": "Κορίτσι", "url": "/static/persona-avatars/persona-girl.png"},
+            {"label": "Άντρας", "url": "/static/persona-avatars/persona-man.png"},
+            {"label": "Ρομποτάκι", "url": "/static/persona-avatars/persona-robot.png"},
+        ]
+        persona_avatar_choices = (get_system_setting("persona_avatar_choices", None) or default_avatar_choices) + [{}] * 5
         public = get_system_setting("public_base_url", "") or ""
         secret_note = "<small>Άφησε κενό ένα secret για να διατηρηθεί η ήδη αποθηκευμένη τιμή.</small>"
         admin = f"""<div class='card'><h2>Ρύθμιση εφαρμογών και συστημάτων</h2><form method='post' action='/integrations/config'><input type='hidden' name='csrf' value='{esc(user['csrf_token'])}'>
@@ -637,6 +647,10 @@ async def integrations_page(request: Request, user=Depends(current_user)):
         <label>Stability (0–1, χαμηλότερο = πιο εκφραστικό αλλά λιγότερο σταθερό)<input name='elevenlabs_stability' value='{esc(elevenlabs.get("stability",0.45))}'></label>
         <label>Similarity boost (0–1)<input name='elevenlabs_similarity_boost' value='{esc(elevenlabs.get("similarity_boost",0.8))}'></label>
         <label>Style (0–1, υψηλότερο = πιο δραματικό, μπορεί να γίνει ασταθές)<input name='elevenlabs_style' value='{esc(elevenlabs.get("style",0.35))}'></label>{secret_note}
+        <h3>Φωνές προσωπικού persona (έως 5)</h3><p><small>Αυτές οι φωνές εμφανίζονται σαν επιλογές στη σελίδα <code>/voice</code> κάθε μέλους της οικογένειας — δεν μπορούν να βάλουν δικό τους voice ID, μόνο να διαλέξουν από αυτές. Άφησε ετικέτα+ID κενά για να μη δείχνεται η θέση.</small></p>
+        {"".join(f"<label>Ετικέτα #{i+1}<input name='persona_voice_label_{i+1}' value='{esc(persona_voice_choices[i].get('label',''))}' placeholder='π.χ. Ζωηρή'></label><label>Voice ID #{i+1}<input name='persona_voice_id_{i+1}' value='{esc(persona_voice_choices[i].get('voice_id',''))}'></label>" for i in range(5))}
+        <h3>Avatar εικόνες προσωπικού persona (έως 5)</h3><p><small>Ίδιο μοτίβο με τις φωνές — επιλογές έτοιμων εικόνων, όχι ελεύθερο URL. Προσυμπληρωμένο με τις 5 βασικές εικόνες (Αθηνά + αγόρι/κορίτσι/άντρας/ρομποτάκι, όλα δημιουργημένα με το ίδιο δωρεάν image tool της ATHENA).</small></p>
+        {"".join(f"<label>Ετικέτα #{i+1}<input name='persona_avatar_label_{i+1}' value='{esc(persona_avatar_choices[i].get('label',''))}' placeholder='π.χ. Αγόρι'></label><label>URL εικόνας #{i+1}<input name='persona_avatar_url_{i+1}' value='{esc(persona_avatar_choices[i].get('url',''))}'></label>" for i in range(5))}
         <h3>Local voice runtime</h3><p><small>Το "Wake phrase" ενεργοποιεί την ATHENA τόσο σε αφοσιωμένες συσκευές (satellite) όσο και στο μικρόφωνο του <code>/graph</code> — τοπική μεταγραφή με faster-whisper, καμία εξωτερική υπηρεσία.</small></p><label>Whisper model<input name='voice_stt_model' value='{esc(voice_cfg.get('stt_model','small'))}'></label><label>Device<input name='voice_stt_device' value='{esc(voice_cfg.get('stt_device','cpu'))}'></label><label>Compute type<input name='voice_stt_compute_type' value='{esc(voice_cfg.get('stt_compute_type','int8'))}'></label><label>Piper voice<input name='voice_tts_voice' value='{esc(voice_cfg.get('tts_voice','el_GR-rapunzelina-low'))}'></label><label>Wake phrase<input name='voice_wake_phrase' value='{esc(voice_cfg.get('wake_phrase','Αθηνά'))}'></label>
         <button>Αποθήκευση ρυθμίσεων</button></form></div>"""
     body = f"<h1>Συνδέσεις</h1><div class='grid'>{cards}</div>{personal}{admin}"
@@ -692,6 +706,24 @@ async def integrations_config(request: Request, csrf: str = Form(...), user=Depe
         "wake_language": "el",
     }
     set_system_setting("voice", voice_cfg, user["id"])
+    # A curated, admin-picked list of ElevenLabs voices family members can choose
+    # from for their own persona (see /voice and app/persona.py) — deliberately
+    # not a free-text voice ID field there, so a kid can't paste in an arbitrary
+    # voice from anywhere on the internet.
+    voice_choices = []
+    for i in range(1, 6):
+        label = str(form.get(f"persona_voice_label_{i}") or "").strip()
+        voice_id = str(form.get(f"persona_voice_id_{i}") or "").strip()
+        if label and voice_id:
+            voice_choices.append({"label": label[:60], "voice_id": voice_id[:120]})
+    set_system_setting("persona_voice_choices", voice_choices, user["id"])
+    avatar_choices = []
+    for i in range(1, 6):
+        label = str(form.get(f"persona_avatar_label_{i}") or "").strip()
+        url = str(form.get(f"persona_avatar_url_{i}") or "").strip()
+        if label and url:
+            avatar_choices.append({"label": label[:60], "url": url[:500]})
+    set_system_setting("persona_avatar_choices", avatar_choices, user["id"])
     audit(user["id"], "integration_configuration_updated", {"providers": list(mapping)}, client_ip(request))
     return RedirectResponse("/integrations", 303)
 
@@ -1701,9 +1733,12 @@ async def actions_page(request: Request, user=Depends(current_user)):
 async def graph_page(request: Request, user=Depends(current_user)):
     require_capability(user, "creative.read")
     admin_nav = "<a href='/admin/users'>Χρήστες</a><a href='/mcp'>MCP</a>" if user["role"] == "admin" else ""
+    persona = get_persona(user["id"])
+    display_name = persona["assistant_name"] or "ATHENA"
+    reactor_avatar = persona["avatar_url"] or "/static/avatar.jpg"
     shell = f"""<!doctype html><html lang='el'><head><meta charset='utf-8'>
     <meta name='viewport' content='width=device-width,initial-scale=1'>
-    <title>Γράφος · ATHENA</title>
+    <title>Γράφος · {esc(display_name)}</title>
     <link rel='stylesheet' href='/static/styles.css'>
     </head><body>
     <header id='hudNav'>
@@ -1719,7 +1754,7 @@ async def graph_page(request: Request, user=Depends(current_user)):
       <div id='hubs'><h3>Top hubs</h3><ol id='hubsList'></ol></div>
     </div>
     <div id='rightPanel' class='panel'>
-      <div id='reactor' class='idle'><img src='/static/avatar.jpg' alt='ATHENA'><canvas id='reactorWave'></canvas></div>
+      <div id='reactor' class='idle'><img src='{esc(reactor_avatar)}' alt='{esc(display_name)}'><canvas id='reactorWave'></canvas></div>
       <div id='reactorLabel'>idle</div>
       <div id='modelLabel'></div>
       <div id='filterList'></div>
@@ -1740,17 +1775,69 @@ async def graph_page(request: Request, user=Depends(current_user)):
     return HTMLResponse(shell)
 
 
+class PersonaRequest(BaseModel):
+    assistant_name: str = Field(default="", max_length=40)
+    persona_note: str = Field(default="", max_length=500)
+    voice_id: str = Field(default="", max_length=120)
+    avatar_url: str = Field(default="", max_length=500)
+
+
+@app.get("/api/persona")
+async def api_persona_get(user=Depends(current_user)):
+    return get_persona(user["id"])
+
+
+@app.post("/api/persona")
+async def api_persona_set(payload: PersonaRequest, request: Request, user=Depends(current_user)):
+    verify_csrf(request, user)
+    require_capability(user, "voice.use")
+    result = set_persona(user["id"], payload.assistant_name, payload.persona_note, payload.voice_id, payload.avatar_url)
+    audit(user["id"], "persona_updated", {"assistant_name": payload.assistant_name}, client_ip(request))
+    return result
+
+
 @app.get("/voice", response_class=HTMLResponse)
 async def voice_page(request: Request, user=Depends(current_user)):
     require_capability(user, "voice.use")
-    body = """<h1>Φωνή</h1>
-    <div class='grid'>
+    persona = get_persona(user["id"])
+    voice_choices = get_system_setting("persona_voice_choices", []) or []
+    voice_options = "<option value=''>(system default)</option>" + "".join(
+        f"<option value='{esc(v['voice_id'])}' {'selected' if v['voice_id'] == persona['voice_id'] else ''}>{esc(v['label'])}</option>"
+        for v in voice_choices
+    )
+    avatar_choices = get_system_setting("persona_avatar_choices", []) or []
+    avatar_thumbs = "".join(
+        f"<img src='{esc(a['url'])}' title='{esc(a['label'])}' onclick=\"selectPersonaAvatar('{esc(a['url'])}')\" "
+        f"style='width:64px;height:64px;border-radius:50%;object-fit:cover;cursor:pointer;border:3px solid {'var(--accent)' if a['url'] == persona['avatar_url'] else 'transparent'}' "
+        f"data-avatar-thumb='{esc(a['url'])}'>"
+        for a in avatar_choices
+    )
+    voice_field = (
+        f"<label>Φωνή<select id='personaVoiceId'>{voice_options}</select></label>" if voice_choices
+        else "<p class='muted'>Δεν έχουν ρυθμιστεί φωνές ακόμα από τον διαχειριστή.</p><input type='hidden' id='personaVoiceId' value=''>"
+    )
+    # Kept out of the big JS-heavy template below on purpose — that one is a
+    # plain (non-f) string so its literal { } in the JS don't need escaping;
+    # only this small HTML-only fragment needs interpolation.
+    avatar_field = (
+        f"<label>Avatar</label><div style='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px'>{avatar_thumbs}</div><input type='hidden' id='personaAvatarUrl' value='{esc(persona['avatar_url'])}'>"
+        if avatar_choices else "<p class='muted'>Δεν έχουν ρυθμιστεί avatar εικόνες ακόμα από τον διαχειριστή.</p><input type='hidden' id='personaAvatarUrl' value=''>"
+    )
+    persona_card = f"""<div class='card'><h2>Το προσωπικό σου ATHENA</h2><p>Πώς θέλεις να σε λέει/να παρουσιάζεται όταν μιλάει σε ΕΣΕΝΑ — ισχύει μόνο στον δικό σου λογαριασμό, δεν αλλάζει τίποτα για τους υπόλοιπους.</p>
+      <label>Όνομα (κενό = "ATHENA")<input id='personaName' value='{esc(persona["assistant_name"])}' maxlength='40' placeholder='π.χ. Ζωή'></label>
+      <label>Σημείωση προσωπικότητας (προαιρετικό — π.χ. "μίλα πιο παιχνιδιάρικα, μιλάω μαζί σου σαν φίλος")<textarea id='personaNote' maxlength='500'>{esc(persona["persona_note"])}</textarea></label>
+      {voice_field}
+      {avatar_field}
+      <button onclick='savePersona()'>Αποθήκευση</button><pre id='personaOut'></pre></div>"""
+    body = "<h1>Φωνή</h1><div class='grid'>" + persona_card + """
       <div class='card'><h2>Speech-to-text</h2><input id='sttFile' type='file' accept='audio/*'><button onclick='stt()'>Μεταγραφή</button><pre id='sttOut'></pre></div>
       <div class='card'><h2>Text-to-speech</h2><textarea id='ttsText'></textarea><label>Voice ID (προαιρετικό — κενό = το default από τις ρυθμίσεις)<input id='ttsVoice' value='' placeholder='π.χ. ElevenLabs voice ID'></label><button onclick='tts()'>Δημιουργία ήχου</button><audio id='ttsAudio' controls></audio><pre id='ttsOut'></pre></div>
       <div class='card'><h2>Voice ID</h2><p>Η εγγραφή βιομετρικού αποτυπώματος είναι προαιρετική και γίνεται μόνο για τον τρέχοντα λογαριασμό.</p><input id='enrollFiles' type='file' accept='audio/*' multiple><button onclick='enroll()'>Εγγραφή Voice ID</button><input id='verifyFile' type='file' accept='audio/*'><button onclick='verifyVoice()'>Έλεγχος Voice ID</button><button class='danger' onclick='removeVoice()'>Διαγραφή Voice ID</button><pre id='voiceOut'></pre></div>
       <div class='card'><h2>Μικρόφωνο / Wake phrase</h2><label>Wake phrase<input id='wakePhrase' value='Αθηνά'></label><button onclick='recordWake()'>Ηχογράφηση 5 δευτερολέπτων</button><pre id='wakeOut'></pre><small>Η πρόσβαση μικροφώνου σε browser συνήθως απαιτεί HTTPS ή localhost.</small></div>
     </div>
     <script>
+    function selectPersonaAvatar(url){personaAvatarUrl.value=url;document.querySelectorAll('[data-avatar-thumb]').forEach(img=>{img.style.border='3px solid '+(img.getAttribute('data-avatar-thumb')===url?'var(--accent)':'transparent')})}
+    async function savePersona(){try{personaOut.textContent=pretty(await api('/api/persona',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assistant_name:personaName.value,persona_note:personaNote.value,voice_id:personaVoiceId.value,avatar_url:personaAvatarUrl.value})}))}catch(e){personaOut.textContent=e.message}}
     async function stt(){let f=sttFile.files[0];if(!f)return;let fd=new FormData();fd.append('audio',f);try{sttOut.textContent=pretty(await api('/api/voice/stt',{method:'POST',body:fd}))}catch(e){sttOut.textContent=e.message}}
     async function tts(){try{let r=await fetch('/api/voice/tts',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':window.ATHENA_CSRF},body:JSON.stringify({text:ttsText.value,voice:ttsVoice.value,length_scale:1})});if(!r.ok)throw new Error(await r.text());let b=await r.blob();ttsAudio.src=URL.createObjectURL(b);ttsOut.textContent='ready'}catch(e){ttsOut.textContent=e.message}}
     async function enroll(){let fd=new FormData();for(let f of enrollFiles.files)fd.append('samples',f);fd.append('consent','true');try{voiceOut.textContent=pretty(await api('/api/voice/enroll',{method:'POST',body:fd}))}catch(e){voiceOut.textContent=e.message}}
@@ -1824,9 +1911,13 @@ class TTSRequest(BaseModel):
 async def api_voice_tts(payload: TTSRequest, request: Request, user=Depends(current_user)):
     verify_csrf(request, user)
     require_capability(user, "voice.use")
+    # An explicit voice in the request (the /voice page's one-off tester) always
+    # wins; otherwise fall back to this user's own saved preference (see
+    # app/persona.py), and only then to the system-wide default.
+    preferred_voice = payload.voice or get_persona(user["id"])["voice_id"] or None
     if elevenlabs_configured():
         try:
-            audio_bytes = await elevenlabs_synthesize(payload.text, payload.voice or None)
+            audio_bytes = await elevenlabs_synthesize(payload.text, preferred_voice)
             audit(user["id"], "voice_synthesized", {"backend": "elevenlabs"}, client_ip(request))
             return Response(content=audio_bytes, media_type="audio/mpeg")
         except VoiceBackendError as exc:
