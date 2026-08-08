@@ -125,6 +125,17 @@ jobs:
           echo "$setup_code" | tee "$DIAG_DIR/setup-http-code.txt"
           test "$setup_code" = 303
 
+          # A freshly-set-up account has an unconfigured persona (2026-08-08),
+          # so every page redirects to /welcome until it's saved or skipped —
+          # same as any real first login. Fetch /welcome for its CSRF token
+          # and skip the wizard before checking /graph is reachable.
+          curl -fsS -b "$DIAG_DIR/cookies.txt" -c "$DIAG_DIR/cookies.txt" http://127.0.0.1:18000/welcome > "$DIAG_DIR/welcome-page.html"
+          csrf_token="$(grep -oP 'window\.ATHENA_CSRF=\"\K[^\"]+' "$DIAG_DIR/welcome-page.html")"
+          test -n "$csrf_token"
+          curl -fsS -b "$DIAG_DIR/cookies.txt" -X POST http://127.0.0.1:18000/api/persona \
+            -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf_token" \
+            -d '{"assistant_name":"","persona_note":"","voice_id":"","avatar_url":""}' > "$DIAG_DIR/persona-skip.json"
+
           curl -fsS -b "$DIAG_DIR/cookies.txt" http://127.0.0.1:18000/api/status > "$DIAG_DIR/status.json"
           curl -fsS -b "$DIAG_DIR/cookies.txt" http://127.0.0.1:18000/graph > "$DIAG_DIR/graph-page.html"
           grep -q "AthenaGraph" "$DIAG_DIR/graph-page.html" 2>/dev/null || grep -q "graph.js" "$DIAG_DIR/graph-page.html"
