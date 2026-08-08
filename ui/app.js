@@ -124,6 +124,80 @@
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
+  // --- dynamic answer cards ------------------------------------------------
+  // ask() used to only ever show prose text. Some questions have a much more
+  // useful shape than a paragraph — health stats, a list of emails, a list of
+  // home devices — and the tool ATHENA already called to answer them (see
+  // tool_results in orchestrator.py's ask()) has exactly that structured data
+  // sitting right there. Each entry here is CARD_RENDERERS[toolName](result) =>
+  // an HTML string, or null to fall back to plain text (e.g. the tool errored,
+  // or has nothing to show yet). Adding a new card later is just adding a new
+  // entry — no other wiring needed, tool_results already carries every tool
+  // call ATHENA made this turn. Reuses the escapeHtml() already defined
+  // above for graph node labels.
+  const CARD_RENDERERS = {
+    health_summary(result) {
+      if (!result || !result.has_any_data) {
+        return `<div class="dynCard dynCard-health"><div class="dynCard-title">🩺 Υγεία</div>
+          <p class="muted">Δεν έχουν συγχρονιστεί δεδομένα ακόμα — ρύθμισε το Health Connect Webhook app στο κινητό σου (βλ. /integrations).</p></div>`;
+      }
+      const rows = [];
+      if (result.avg_steps_per_day != null) rows.push(statRow("👣", "Βήματα/ημέρα (μ.ο.)", Math.round(result.avg_steps_per_day).toLocaleString("el-GR")));
+      if (result.avg_sleep_hours != null) rows.push(statRow("😴", "Ύπνος (μ.ο.)", result.avg_sleep_hours + " ώρες"));
+      if (result.heart_rate_bpm) rows.push(statRow("❤️", "Καρδιακοί παλμοί", `${result.heart_rate_bpm.latest} bpm (${result.heart_rate_bpm.min}-${result.heart_rate_bpm.max})`));
+      if (result.resting_heart_rate_bpm) rows.push(statRow("💤", "Ηρεμίας", result.resting_heart_rate_bpm.latest + " bpm"));
+      if (result.weight_kg) rows.push(statRow("⚖️", "Βάρος", result.weight_kg.latest + " kg"));
+      return `<div class="dynCard dynCard-health"><div class="dynCard-title">🩺 Υγεία <span class="muted">(τελευταίες ${result.window_days} ημέρες)</span></div>${rows.join("")}</div>`;
+    },
+    gmail_search(result) {
+      const messages = (result && result.messages) || [];
+      if (!messages.length) return `<div class="dynCard dynCard-email"><div class="dynCard-title">📧 Email</div><p class="muted">Καμία αντιστοιχία.</p></div>`;
+      const rows = messages.slice(0, 6).map((m) => {
+        const from = (m.headers && m.headers.from || "").replace(/<.*>/, "").trim() || "?";
+        const subject = (m.headers && m.headers.subject) || "(χωρίς θέμα)";
+        return `<div class="dynCard-row"><div class="dynCard-row-main"><strong>${escapeHtml(from)}</strong><span class="dynCard-row-sub">${escapeHtml(subject)}</span></div>
+          <div class="dynCard-row-detail">${escapeHtml((m.snippet || "").slice(0, 90))}</div></div>`;
+      }).join("");
+      const more = messages.length > 6 ? `<p class="muted">+${messages.length - 6} ακόμα</p>` : "";
+      return `<div class="dynCard dynCard-email"><div class="dynCard-title">📧 Email</div>${rows}${more}</div>`;
+    },
+    homeassistant_states(result) {
+      const entities = Array.isArray(result) ? result : (result && result.entity_id ? [result] : []);
+      if (!entities.length) return `<div class="dynCard dynCard-home"><div class="dynCard-title">🏠 Σπίτι</div><p class="muted">Καμία συσκευή βρέθηκε.</p></div>`;
+      const DOMAIN_ICON = { light: "💡", switch: "🔌", climate: "🌡️", lock: "🔒", cover: "🪟", media_player: "📺", sensor: "📊", person: "🧍", binary_sensor: "🔘" };
+      const OK_STATES = new Set(["on", "home", "unlocked", "open", "playing"]);
+      const rows = entities.slice(0, 16).map((e) => {
+        const domain = (e.entity_id || "").split(".")[0];
+        const icon = DOMAIN_ICON[domain] || "⚙️";
+        const label = (e.attributes && e.attributes.friendly_name) || e.entity_id;
+        const stateClass = OK_STATES.has(e.state) ? "ok" : (e.state === "unavailable" || e.state === "unknown" ? "warn" : "");
+        return `<div class="dynCard-row dynCard-row-compact"><span>${icon} ${escapeHtml(label)}</span><span class="dynCard-state ${stateClass}">${escapeHtml(e.state)}</span></div>`;
+      }).join("");
+      const more = entities.length > 16 ? `<p class="muted">+${entities.length - 16} ακόμα</p>` : "";
+      return `<div class="dynCard dynCard-home"><div class="dynCard-title">🏠 Σπίτι</div>${rows}${more}</div>`;
+    },
+  };
+
+  function statRow(icon, label, value) {
+    return `<div class="dynCard-row dynCard-row-compact"><span>${icon} ${label}</span><strong>${escapeHtml(String(value))}</strong></div>`;
+  }
+
+  // Picks the last tool_results entry ATHENA's own reasoning actually used
+  // this turn that both has a renderer here and didn't error — "last" so
+  // that if several tools were called, whichever one drove the final answer
+  // (typically called closest to producing it) wins.
+  function renderCardFor(toolResults) {
+    if (!Array.isArray(toolResults)) return null;
+    for (let i = toolResults.length - 1; i >= 0; i--) {
+      const entry = toolResults[i];
+      const renderer = entry && CARD_RENDERERS[entry.name];
+      if (!renderer) continue;
+      if (entry.result && entry.result.status === "error") continue;
+      return renderer(entry.result);
+    }
+    return null;
+  }
+
   // --- ask ---------------------------------------------------------------
   // /api/ask streams newline-delimited JSON ({"event":"delta","text":...} then
   // one final {"event":"done","result":{...}}) so text appears as it's
@@ -160,7 +234,8 @@
         }
       }
       const data = result || {};
-      showAnswer(data.answer || streamed || "(χωρίς απάντηση)");
+      const card = renderCardFor(data.tool_results);
+      if (card) showCard(card); else showAnswer(data.answer || streamed || "(χωρίς απάντηση)");
       const family = data.brain && data.brain.route_family;
       modelLabel.textContent = family ? FAMILY_LABELS[family] || family : "";
       await maybeSpeak(data.answer || streamed);
@@ -173,6 +248,11 @@
 
   function showAnswer(text) {
     answerCard.textContent = text;
+    answerCard.classList.add("visible");
+  }
+
+  function showCard(html) {
+    answerCard.innerHTML = html;
     answerCard.classList.add("visible");
   }
 

@@ -609,6 +609,12 @@ async def ask(user, question: str, on_delta=None, voice: bool = False) -> dict[s
     model_order = [route["primary_model"], *route["fallback_models"]]
     active_model = model_order[0]
     all_failures: list[dict[str, Any]] = []
+    # Every tool call's own structured result, across every round of this turn —
+    # normally only the prose answer survives (the tool result is serialized into
+    # a "tool" message for the model and otherwise discarded). The frontend uses
+    # this to render a dynamic card (health/email/home/...) grounded in the real
+    # data instead of just showing prose, when a tool it recognizes was used.
+    tool_trace: list[dict[str, Any]] = []
     for _ in range(6):
         request_body: dict[str, Any] = {"messages": messages, "temperature": 0.2}
         if tools:
@@ -643,6 +649,7 @@ async def ask(user, question: str, on_delta=None, voice: bool = False) -> dict[s
             return {
                 "status": "ready",
                 "answer": answer,
+                "tool_results": tool_trace,
                 "brain": {
                     "selection": "athena_automatic",
                     "route_family": model_family(active_model),
@@ -653,11 +660,16 @@ async def ask(user, question: str, on_delta=None, voice: bool = False) -> dict[s
             }
         for call in tool_calls:
             function = call.get("function", {})
+            name = function.get("name", "")
             try:
                 args = json.loads(function.get("arguments") or "{}")
-                result = await execute_tool(user, function.get("name", ""), args)
+            except Exception:
+                args = {}
+            try:
+                result = await execute_tool(user, name, args)
             except Exception as exc:
                 result = {"status": "error", "error": str(exc)}
+            tool_trace.append({"name": name, "args": args, "result": result})
             messages.append(
                 {
                     "role": "tool",

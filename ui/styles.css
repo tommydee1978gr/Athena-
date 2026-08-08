@@ -176,5 +176,21 @@ html, body {
 }
 #answerCard.visible { display: block; }
 
+/* Dynamic answer cards — replace plain text inside #answerCard when a tool
+   ATHENA called (health/email/home/...) has a renderer for its result, see
+   CARD_RENDERERS in app.js. Same panel, same position, just structured
+   markup instead of a text node. */
+.dynCard-title { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 8px; }
+.dynCard-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 6px 0; border-top: 1px solid var(--line); }
+.dynCard-row:first-of-type { border-top: none; }
+.dynCard-row-compact { padding: 5px 0; }
+.dynCard-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dynCard-row-main strong { font-size: 13.5px; }
+.dynCard-row-sub { color: var(--muted); font-size: 12px; }
+.dynCard-row-detail { color: var(--muted); font-size: 12px; max-width: 220px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dynCard-state { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .02em; }
+.dynCard-state.ok { color: var(--ok); }
+.dynCard-state.warn { color: var(--warn); }
+
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
