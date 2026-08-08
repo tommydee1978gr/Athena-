@@ -52,6 +52,7 @@ from .integrations import (
     instagram_publish,
     integration_probe,
     omada_request,
+    public_base_url,
     revoke_connection,
     safe_media_path,
     set_app_config,
@@ -95,17 +96,22 @@ from .satellite import run_satellite_session
 from .security import (
     audit,
     consume_confirmation,
+    create_health_webhook_token,
     create_satellite_token,
     create_session,
     delete_session,
     get_session,
     issue_confirmation,
+    list_health_webhook_tokens,
     list_satellite_tokens,
     password_hash,
     password_verify,
+    resolve_health_webhook_token,
     resolve_satellite_token,
+    revoke_health_webhook_token,
     revoke_satellite_token,
 )
+from .health import ingest_metrics as ingest_health_metrics
 from .ui import esc, layout, status_card
 from .voice import VoiceBackendError, elevenlabs_configured, elevenlabs_synthesize, elevenlabs_transcribe, enroll_voice, remove_voiceprint, runtime_status as voice_runtime_status, synthesize, transcribe, verify_voice
 
@@ -561,12 +567,43 @@ async def integrations_page(request: Request, user=Depends(current_user)):
         connection_rows.append(
             f"<tr><td>{esc(provider)}</td><td>{esc(status['status'])}</td><td>{esc(status.get('account',''))}</td><td><small>{scopes}</small></td><td>{actions}</td></tr>"
         )
+    health_card = ""
+    if is_allowed(user, "health.read"):
+        health_tokens = list_health_webhook_tokens(user["id"])
+        health_rows = "".join(
+            f"<tr><td>{esc(t['label'])}</td><td><small>{esc(t['created_at'][:10])}</small></td><td><small>{esc((t['last_seen_at'] or 'ποτέ')[:10] if t['last_seen_at'] else 'ποτέ')}</small></td>"
+            f"<td><button onclick=\"revokeHealthToken('{esc(t['id'])}')\" class='danger'>Ανάκληση</button></td></tr>"
+            for t in health_tokens
+        ) or "<tr><td colspan='4' class='muted'>Κανένα token ακόμα.</td></tr>"
+        health_card = f"""<div class='card'><h2>Προσωπικά δεδομένα υγείας</h2>
+        <p>Ιδιωτικό ανά χρήστη, δεν μοιράζεται με την υπόλοιπη οικογένεια. Ροή: <strong>Health Sync</strong> app στο κινητό σου γεφυρώνει Huawei Health/Fitbit/Garmin/κ.λπ. στο Android <strong>Health Connect</strong>, και το <strong>Health Connect Webhook</strong> app (Google Play) στέλνει τα δεδομένα εδώ σε τακτά διαστήματα. Δημιούργησε ένα token, βάλε το URL και το header στο Health Connect Webhook app.</p>
+        <p><label>Ετικέτα (π.χ. "Το κινητό μου")<input id='healthTokenLabel' value='Κινητό'></label>
+        <button onclick='createHealthToken()'>Δημιουργία token</button></p>
+        <pre id='healthTokenOut' class='muted' style='display:none'></pre>
+        <table><tr><th>Ετικέτα</th><th>Δημιουργήθηκε</th><th>Τελευταία λήψη</th><th></th></tr>{health_rows}</table></div>
+        <script>
+        async function createHealthToken(){{
+          const label = document.getElementById('healthTokenLabel').value || 'Κινητό';
+          const out = document.getElementById('healthTokenOut');
+          try {{
+            const r = await api('/api/health/tokens', {{method:'POST', headers:{{'Content-Type':'application/json'}}, body: JSON.stringify({{label}})}});
+            out.style.display = 'block';
+            out.textContent = 'Webhook URL: ' + r.webhook_url + '\\nHeader: ' + r.header + '\\n\\n' + r.note;
+          }} catch (e) {{ out.style.display = 'block'; out.textContent = 'Σφάλμα: ' + e.message; }}
+        }}
+        async function revokeHealthToken(id){{
+          if (!confirm('Ανάκληση αυτού του token;')) return;
+          await api('/api/health/tokens/' + id, {{method:'DELETE'}});
+          location.reload();
+        }}
+        </script>"""
     personal = (
         f"<div class='card'><h2>Προσωπικές συνδέσεις</h2><p>Κάθε μέλος συνδέει αποκλειστικά τον δικό του λογαριασμό και επιλέγει ανεξάρτητα scopes. Η ανάκληση οποιασδήποτε Google σύνδεσης ανακαλεί το συνολικό OAuth grant της εφαρμογής και διαγράφει όλες τις τοπικές Google συνδέσεις του ίδιου χρήστη.</p>"
         f"{google_buttons}<p><a class='button' href='/oauth/spotify/start'>Σύνδεση Spotify</a> "
         f"<a class='button' href='/oauth/tiktok/start'>Σύνδεση TikTok</a> "
         f"<a class='button' href='/oauth/instagram/start'>Σύνδεση Instagram</a> "
         f"<small>(μόνο Professional/Creator λογαριασμός — δεν υπάρχει API για personal)</small></p></div>"
+        f"{health_card}"
         f"<div class='card'><table><tr><th>Connector</th><th>Status</th><th>Account</th><th>Scopes</th><th></th></tr>{''.join(connection_rows)}</table></div>"
     )
     admin = ""
@@ -1893,6 +1930,59 @@ async def api_satellite_tokens_revoke(token_id: str, request: Request, user=Depe
     ok = revoke_satellite_token(user["id"], token_id)
     audit(user["id"], "satellite_token_revoked", {"token_id": token_id, "found": ok}, client_ip(request))
     return {"status": "revoked" if ok else "not_found"}
+
+
+class HealthTokenRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=80)
+
+
+@app.get("/api/health/tokens")
+async def api_health_tokens_list(user=Depends(current_user)):
+    require_capability(user, "health.read")
+    return {"items": list_health_webhook_tokens(user["id"])}
+
+
+@app.post("/api/health/tokens")
+async def api_health_tokens_create(payload: HealthTokenRequest, request: Request, user=Depends(current_user)):
+    verify_csrf(request, user)
+    require_capability(user, "health.read")
+    token = create_health_webhook_token(user["id"], payload.label)
+    audit(user["id"], "health_webhook_token_created", {"label": payload.label}, client_ip(request))
+    webhook_url = f"{public_base_url(request_base(request))}/api/health/webhook"
+    # Shown exactly once — the server never stores or displays it again, same as an API key.
+    return {"token": token, "label": payload.label, "webhook_url": webhook_url, "header": f"Authorization: Bearer {token}", "note": "Save this now — it will not be shown again."}
+
+
+@app.delete("/api/health/tokens/{token_id}")
+async def api_health_tokens_revoke(token_id: str, request: Request, user=Depends(current_user)):
+    verify_csrf(request, user)
+    require_capability(user, "health.read")
+    ok = revoke_health_webhook_token(user["id"], token_id)
+    audit(user["id"], "health_webhook_token_revoked", {"token_id": token_id, "found": ok}, client_ip(request))
+    return {"status": "revoked" if ok else "not_found"}
+
+
+@app.post("/api/health/webhook")
+async def api_health_webhook(request: Request):
+    """Called by a phone-side exporter (Health Connect Webhook app), not a
+    logged-in browser — auth is the per-user Bearer token from
+    /api/health/tokens in the Authorization header, no session cookie, no
+    CSRF (there's no browser/cookie involved to forge a request from)."""
+    auth_header = request.headers.get("authorization", "")
+    token = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
+    row = resolve_health_webhook_token(token)
+    if not row:
+        raise HTTPException(401, "Invalid or missing health webhook token")
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "Invalid JSON body") from exc
+    try:
+        result = ingest_metrics(row["id"], payload)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit(row["id"], "health_metrics_ingested", {"inserted": result["inserted"], "skipped": result["skipped"]}, client_ip(request))
+    return result
 
 
 @app.websocket("/ws/voice/satellite")

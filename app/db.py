@@ -274,6 +274,35 @@ def init_db() -> None:
               last_seen_at TEXT
             );
 
+            -- Same shape/purpose as satellite_tokens (a long-lived per-user device
+            -- credential, not a session token) but kept separate rather than reused:
+            -- a health-data webhook and a voice satellite are different trust
+            -- boundaries, and conflating them would mean one token type could
+            -- silently authenticate the other's endpoint too.
+            CREATE TABLE IF NOT EXISTS health_webhook_tokens(
+              token_hash TEXT PRIMARY KEY,
+              user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              label TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              last_seen_at TEXT
+            );
+
+            -- One row per data point pushed by a Health Connect-exporting app
+            -- (e.g. Health Connect Webhook, fed by Health Sync from Huawei Health).
+            -- value_json holds the metric's own fields verbatim (schema varies per
+            -- metric_type — steps has count/start_time/end_time, weight has
+            -- kilograms/time, etc.) rather than forcing every metric into the same
+            -- rigid columns; recorded_at is pulled out for indexed date-range queries.
+            CREATE TABLE IF NOT EXISTS health_metrics(
+              id TEXT PRIMARY KEY,
+              owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              metric_type TEXT NOT NULL,
+              value_json TEXT NOT NULL,
+              recorded_at TEXT NOT NULL,
+              received_at TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS mcp_servers(
               id TEXT PRIMARY KEY,
               name TEXT NOT NULL UNIQUE,
@@ -317,6 +346,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_routines_owner_enabled ON routines(owner_id, enabled);
             CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled ON mcp_servers(enabled);
             CREATE INDEX IF NOT EXISTS idx_satellite_tokens_user ON satellite_tokens(user_id);
+            CREATE INDEX IF NOT EXISTS idx_health_webhook_tokens_user ON health_webhook_tokens(user_id);
+            CREATE INDEX IF NOT EXISTS idx_health_metrics_owner_type ON health_metrics(owner_id, metric_type, recorded_at);
 
             -- Memory search: SQLite FTS5 keyword index, external-content table synced to
             -- `memories` via triggers. No embedding model, no network, no download — a

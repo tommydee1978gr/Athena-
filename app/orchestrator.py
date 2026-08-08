@@ -23,6 +23,7 @@ from .integrations import (
     youtube_channel,
 )
 from .creative import add_prompt, create_project, list_projects, prompts_that_worked, update_project_status
+from .health import daily_summary as health_daily_summary
 from .mcp_client import call_cached_tool, cached_tools_as_functions, tool_requires_confirmation as mcp_tool_requires_confirmation
 from .memory import add_memory, search_memory
 from .project_files import list_files as list_project_files, mounted as project_files_mounted, read_text_file as read_project_file
@@ -127,6 +128,12 @@ def available_tools(user) -> list[dict[str, Any]]:
         ]
     if is_allowed(user, "infra.read"):
         tools.append(_tool("server_status", "Read the Unraid home server's own status — array state, storage capacity (free/used/total), and running Docker containers. Never changes anything.", {}))
+    if is_allowed(user, "health.read"):
+        tools.append(_tool(
+            "health_summary",
+            "Read this user's own personal health/fitness data (steps, sleep, heart rate, weight, and whatever else their phone syncs in) — a per-day digest over a recent window. Private to this user, never shared with other family members. Returns has_any_data=false if nothing has been synced yet — in that case tell the user they need to set up the Health Connect Webhook app first, don't invent numbers.",
+            {"days": {"type": "integer", "minimum": 1, "maximum": 90}},
+        ))
     if is_allowed(user, "creative.write"):
         tools += [
             _tool(
@@ -326,6 +333,9 @@ async def execute_tool(user, name: str, args: dict[str, Any]) -> Any:
             "docker { containers { names state status } } }"
         )
         return data
+    if name == "health_summary" and is_allowed(user, "health.read"):
+        days = int(args.get("days") or 7)
+        return health_daily_summary(user["id"], days=max(1, min(days, 90)))
     if name == "craft_prompt" and is_allowed(user, "creative.write"):
         platform = str(args.get("platform", ""))
         if platform not in PLATFORM_NOTES:

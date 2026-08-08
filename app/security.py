@@ -172,6 +172,47 @@ def revoke_satellite_token(user_id: str, token_id_prefix: str) -> bool:
     return cur.rowcount > 0
 
 
+def create_health_webhook_token(user_id: str, label: str) -> str:
+    """A long-lived credential for a phone-side health-data exporter (e.g. the
+    Health Connect Webhook app) to push into /api/health/webhook — same
+    long-lived-not-a-session shape as create_satellite_token, see there."""
+    token = secrets.token_urlsafe(40)
+    now = utcnow()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO health_webhook_tokens(token_hash,user_id,label,created_at,last_seen_at) VALUES(?,?,?,?,?)",
+            (token_hash(token), user_id, label.strip()[:80], now, None),
+        )
+    return token
+
+
+def resolve_health_webhook_token(token: str | None):
+    if not token:
+        return None
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT ht.token_hash,u.* FROM health_webhook_tokens ht JOIN users u ON u.id=ht.user_id WHERE ht.token_hash=? AND u.active=1",
+            (token_hash(token),),
+        ).fetchone()
+        if row:
+            conn.execute("UPDATE health_webhook_tokens SET last_seen_at=? WHERE token_hash=?", (utcnow(), row["token_hash"]))
+        return row
+
+
+def list_health_webhook_tokens(user_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT token_hash,label,created_at,last_seen_at FROM health_webhook_tokens WHERE user_id=? ORDER BY created_at DESC", (user_id,)
+        ).fetchall()
+    return [{"id": row["token_hash"][:16], "label": row["label"], "created_at": row["created_at"], "last_seen_at": row["last_seen_at"]} for row in rows]
+
+
+def revoke_health_webhook_token(user_id: str, token_id_prefix: str) -> bool:
+    with connect() as conn:
+        cur = conn.execute("DELETE FROM health_webhook_tokens WHERE user_id=? AND token_hash LIKE ?", (user_id, f"{token_id_prefix}%"))
+    return cur.rowcount > 0
+
+
 def audit(user_id: str | None, action: str, details: dict[str, Any], remote_addr: str = "") -> None:
     with connect() as conn:
         conn.execute(
